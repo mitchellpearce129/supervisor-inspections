@@ -351,9 +351,18 @@
    */
   async function addFile(contractId, opts) {
     if (!state.token) throw new AuthError('Not signed in.');
+    // Category id: the upload item carries it as `categoryId` (documentCategoryId
+    // is the older name — accept either). ClickHome's AddFile does int.Parse() on
+    // this field, so a non-numeric value (undefined/null/'') yields a cryptic
+    // 500 "Input string was not in a correct format." Validate up front instead.
+    var catId = opts.categoryId != null ? opts.categoryId : opts.documentCategoryId;
+    var catNum = Number(catId);
+    if (!Number.isInteger(catNum) || catNum <= 0) {
+      throw new ApiError('Upload blocked — invalid document category id (' + JSON.stringify(catId) + ') for ' + (opts.filename || 'file') + '.', 0);
+    }
     var fd = new FormData();
     fd.append('description', opts.description || '');
-    fd.append('documentCategoryId', String(opts.documentCategoryId));
+    fd.append('documentCategoryId', String(catNum));
     fd.append('title', opts.title || '');
     fd.append('fileData', opts.blob, opts.filename);
     var res;
