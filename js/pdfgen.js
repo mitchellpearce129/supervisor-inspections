@@ -12,7 +12,23 @@
   var enc = new TextEncoder();
   var PW = 595.28, PH = 841.89, M = 50, CW = PW - 2 * M;
 
-  function escText(s) { return String(s == null ? '' : s).replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)'); }
+  // Base-14 Helvetica renders single-byte (WinAnsi/ASCII) text, but the content
+  // stream is written as UTF-8 — so any non-ASCII char (en-dash, curly quotes,
+  // accented letters, °, …) would appear as mojibake ("–" -> "â€"). Fold text
+  // down to ASCII first: map common smart punctuation, strip accents via NFKD,
+  // and replace anything still non-ASCII with '?'. (The ODT keeps full UTF-8.)
+  function toAscii(s) {
+    return String(s == null ? '' : s)
+      .replace(/[\u2018\u2019\u201A\u2032\u2035]/g, "'")            // curly single quotes / primes -> '
+      .replace(/[\u201C\u201D\u201E\u2033\u2036]/g, '"')            // curly double quotes / primes -> "
+      .replace(/[\u2010\u2011\u2012\u2013\u2014\u2015\u2212]/g, '-') // hyphens / en/em dash / minus -> -
+      .replace(/\u2026/g, '...')                                       // ellipsis -> ...
+      .replace(/[\u00A0\u2002\u2003\u2007\u2009\u200A\u202F]/g, ' ') // nbsp / thin spaces -> space
+      .replace(/[\u2022\u00B7]/g, '*')                                // bullet / middot -> *
+      .normalize('NFKD').replace(/[\u0300-\u036F]/g, '')              // strip accents: e-acute -> e
+      .replace(/[^\x00-\x7F]/g, '?');                                 // any remaining non-ASCII -> ?
+  }
+  function escText(s) { return toAscii(s).replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)'); }
 
   function wrap(text, maxChars) {
     var words = String(text == null ? '' : text).replace(/\s+/g, ' ').trim().split(' ');
