@@ -1,0 +1,14 @@
+{
+  "name": "Supervisor Inspections",
+  "short_name": "Inspections",
+  "description": "Fast, reliable ClickHome supervisor inspections — capture, review, and upload without losing photos.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0b5fa5",
+  "theme_color": "#0b5fa5",
+  "icons": [
+    { "src": "icons/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

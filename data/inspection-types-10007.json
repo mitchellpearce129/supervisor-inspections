@@ -1,0 +1,19 @@
+{
+  "templateId": 10007,
+  "templateName": "HGWA Single Storey",
+  "inspections": [
+    { "inspTemplateId": 22, "name": "Presite Safety Risk Assessment", "task": "Presite Safety Risk Assessment", "order": 25, "adHoc": true, "configAvailable": true },
+    { "inspTemplateId": 40, "name": "Temp Fencing Checklist", "task": "Temp Fencing Checklist", "order": 26, "adHoc": false, "configAvailable": false },
+    { "inspTemplateId": 8, "name": "Earthworks", "task": "Site Earthworks Report", "order": 80, "adHoc": true, "configAvailable": false },
+    { "inspTemplateId": 9, "name": "Concrete Foot-Slab", "task": "Supervisor Slab Report", "order": 140, "adHoc": true, "configAvailable": false },
+    { "inspTemplateId": 41, "name": "Temp Fencing Install Checklist", "task": "Temp Fencing Install (opt)", "order": 361, "adHoc": false, "configAvailable": false },
+    { "inspTemplateId": 31, "name": "Bricklayer Safety Inspection", "task": "Bricklayer Safety Inspection", "order": 367, "adHoc": false, "configAvailable": false },
+    { "inspTemplateId": 39, "name": "BrickLayer QC", "task": "Quality Control Bricklayer", "order": 450, "adHoc": false, "configAvailable": false },
+    { "inspTemplateId": 32, "name": "Roof Carpenter Safety Inspection", "task": "Roof Carpenter Safety Inspection", "order": 565, "adHoc": false, "configAvailable": false },
+    { "inspTemplateId": 19, "name": "Drywall Checklist", "task": "Drywall / Ceilings Checklist (Opt)", "order": 861, "adHoc": true, "configAvailable": false },
+    { "inspTemplateId": 16, "name": "Metro Wall Paint", "task": "White Set Quality Control (Opt)", "order": 1210, "adHoc": true, "configAvailable": false },
+    { "inspTemplateId": 11, "name": "Footpath defects", "task": "Check Footpath (OPT)", "order": 1925, "adHoc": true, "configAvailable": false },
+    { "inspTemplateId": 18, "name": "Plaster Check", "task": "Plaster Check (Opt)", "order": 2290, "adHoc": true, "configAvailable": false },
+    { "inspTemplateId": 42, "name": "Pre-QCI Invoice check", "task": "Pre-QCI Invoice Check", "order": 2352, "adHoc": false, "configAvailable": false }
+  ]
+}

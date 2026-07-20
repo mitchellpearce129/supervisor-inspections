@@ -1,0 +1,25 @@
+{
+  "inspTemplateId": 22,
+  "name": "Presite Safety Risk Assessment",
+  "adHoc": true,
+  "inspType": 0,
+  "instructions": "",
+  "categories": [{ "id": 1, "name": "Default" }],
+  "questions": [
+    { "id": 871, "order": 10, "categoryId": 1, "responseType": 4, "failBelow": -1, "commentBelow": -1, "photoBelow": -1, "text": "Traffic - Is the dwelling in a high traffic area (near a main road, school, hospital etc), and require traffic management?" },
+    { "id": 877, "order": 20, "categoryId": 1, "responseType": 4, "failBelow": -1, "commentBelow": -1, "photoBelow": -1, "text": "Power / Services - Is the power, gas, water and sewer visible as per the site plan, and in good condition?" },
+    { "id": 878, "order": 30, "categoryId": 1, "responseType": 4, "failBelow": -1, "commentBelow": -1, "photoBelow": -1, "text": "Power / Services - Do you have any overhead power lines?" },
+    { "id": 879, "order": 40, "categoryId": 1, "responseType": 4, "failBelow": -1, "commentBelow": -1, "photoBelow": -1, "text": "Power / Services - Do you require tiger tails?" },
+    { "id": 1694, "order": 42, "categoryId": 1, "responseType": 4, "failBelow": -1, "commentBelow": -1, "photoBelow": -1, "text": "Power / Services - Does this site have a pit dome or requires a distribution dome? If so, please advise Cousins Electrics. If you are unable to locate dome or if there is restricted access, please inform Cousins Electrics." },
+    { "id": 881, "order": 60, "categoryId": 1, "responseType": 4, "failBelow": 1, "commentBelow": 1, "photoBelow": -1, "text": "Boundary Fence - Is the boundary fencing onsite removed as required for us to commence onsite?" },
+    { "id": 882, "order": 70, "categoryId": 1, "responseType": 4, "failBelow": -1, "commentBelow": -1, "photoBelow": -1, "text": "Boundary Fence - Is the fencing in good condition?" },
+    { "id": 884, "order": 80, "categoryId": 1, "responseType": 4, "failBelow": -1, "commentBelow": -1, "photoBelow": -1, "text": "Kerb / Footpath - Is there any current damage to the kerb / footpath?" },
+    { "id": 886, "order": 90, "categoryId": 1, "responseType": 4, "failBelow": 1, "commentBelow": 1, "photoBelow": -1, "text": "Retaining Wall - Are the retaining walls completed onsite prior to us commencing, and are they in good condition?" },
+    { "id": 888, "order": 100, "categoryId": 1, "responseType": 4, "failBelow": -1, "commentBelow": -1, "photoBelow": -1, "text": "Boundary Conditions - Are there any retaining walls, fences or other site conditions that will be undermined or damaged by excavation works?" },
+    { "id": 889, "order": 110, "categoryId": 1, "responseType": 4, "failBelow": -1, "commentBelow": -1, "photoBelow": -1, "text": "Height Of Retaining Walls - Is there a likelihood someone could fall, and cause injury, from the edge of a retaining wall?" },
+    { "id": 890, "order": 120, "categoryId": 1, "responseType": 4, "failBelow": -1, "commentBelow": -1, "photoBelow": -1, "text": "Height Of Retaining Walls - For falls greater than 2m, has fall prevention measures (edge protection/guardrails) been installed?" },
+    { "id": 1743, "order": 125, "categoryId": 1, "responseType": 4, "failBelow": -1, "commentBelow": -1, "photoBelow": -1, "text": "Height Of Retaining Walls - For falls less than 2m, has reasonably practicable controls been applied?" },
+    { "id": 892, "order": 130, "categoryId": 1, "responseType": 4, "failBelow": 1, "commentBelow": 1, "photoBelow": -1, "text": "Rubbish - Is the site free of excessive rubbish? If not, contact Client Liaison to request client to remove rubbish." },
+    { "id": 1703, "order": 140, "categoryId": 1, "responseType": 4, "failBelow": -1, "commentBelow": -1, "photoBelow": -1, "text": "Sewer - Check location (Contact Outlook Plumbing if required to be moved)" }
+  ]
+}
