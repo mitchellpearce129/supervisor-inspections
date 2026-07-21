@@ -81,6 +81,13 @@
       8: { label: 'Statutory', kind: 'unsupported' }
     },
 
+    // Inspection types that get a GPS "location map + defect list" section at
+    // the top of the report. Matched case-insensitively as a substring of the
+    // inspection name (inspectionGroup) — aimed at Kerb & Footpath-style
+    // reports where photo locations are the point. Empty array = never render.
+    // Tune these terms once the exact template name is known.
+    locationMapMatch: ['kerb', 'footpath'],
+
     // Config-fetch account for admin inspection-template reads (Option 3).
     // SECURITY: a client-side PWA CANNOT hide this — keep it least-privilege.
     // Paste the password at deploy; leave blank in source. (Per-system config

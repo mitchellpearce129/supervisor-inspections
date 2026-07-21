@@ -67,6 +67,16 @@
 
     var chain = Promise.resolve();
     if (model.logo) { chain = chain.then(function () { return regImg(model.logo, 900, 300); }).then(function (idx) { blocks.unshift({ t: 'img', idx: idx, frac: 0.4 }); }); }
+    // Location map + defect list at the top (Kerb & Footpath-style reports).
+    if (model.locationMap) { chain = chain.then(function () { return regImg(model.locationMap, 1000, 700); }).then(function (idx) { blocks.push({ t: 'img', idx: idx, frac: 0.92 }); }); }
+    if (model.defects) {
+      chain = chain.then(function () {
+        blocks.push({ t: 'h2', text: 'Defect Locations' });
+        model.defects.forEach(function (d) {
+          blocks.push({ t: 'p', text: d.n + '. ' + d.text + ' — ' + d.lat.toFixed(6) + ', ' + d.lon.toFixed(6) + ' (±' + Math.round(d.acc) + 'm)  ' + d.link });
+        });
+      });
+    }
     (model.questions || []).forEach(function (q, qi) {
       chain = chain.then(function () {
         blocks.push({ t: 'h2', text: (qi + 1) + '. ' + q.text });

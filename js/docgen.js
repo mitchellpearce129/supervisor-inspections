@@ -115,6 +115,16 @@
     // Build questions sequentially so image indices stay ordered.
     var chain = Promise.resolve();
     if (model.logo) { chain = chain.then(function () { return frame(model.logo, 5, 3, 1); }).then(function (fr) { bodyParts.unshift(fr); }); }
+    // Location map + defect list at the top (Kerb & Footpath-style reports).
+    if (model.locationMap) { chain = chain.then(function () { return frame(model.locationMap, 16, 4, 3); }).then(function (fr) { bodyParts.push(fr); }); }
+    if (model.defects) {
+      chain = chain.then(function () {
+        bodyParts.push('<text:h text:outline-level="2">Defect Locations</text:h>');
+        model.defects.forEach(function (d) {
+          bodyParts.push('<text:p>' + esc(d.n + '. ' + d.text + ' — ' + d.lat.toFixed(6) + ', ' + d.lon.toFixed(6) + ' (±' + Math.round(d.acc) + 'm)  ' + d.link) + '</text:p>');
+        });
+      });
+    }
     (model.questions || []).forEach(function (q, qi) {
       chain = chain.then(function () {
         bodyParts.push('<text:h text:outline-level="2">' + esc((qi + 1) + '. ' + q.text) + '</text:h>');

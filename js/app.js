@@ -31,10 +31,135 @@
   }
   function clear(n) { while (n.firstChild) n.removeChild(n.firstChild); }
 
-  // One shared getUserMedia feed powers the capture screen's live inset.
+  // One shared getUserMedia feed + geolocation watch power the capture screen.
   var activeStream = null;
+  var geoWatchId = null;
+  var lastFix = null;   // most recent { lat, lon, acc } for stamping photos
   function stopCamera() {
     if (activeStream) { activeStream.getTracks().forEach(function (t) { t.stop(); }); activeStream = null; }
+    if (geoWatchId != null && navigator.geolocation) { try { navigator.geolocation.clearWatch(geoWatchId); } catch (e) {} }
+    geoWatchId = null; lastFix = null;
+  }
+  // Start watching position when the capture screen opens; cache the latest fix
+  // so each shutter press stamps instantly (no per-photo GPS wait). Denial /
+  // unavailability is silent — photos then stamp time only.
+  function startGeo() {
+    if (geoWatchId != null || !navigator.geolocation) return;
+    try {
+      geoWatchId = navigator.geolocation.watchPosition(
+        function (p) { lastFix = { lat: p.coords.latitude, lon: p.coords.longitude, acc: p.coords.accuracy }; },
+        function () { /* denied / unavailable — leave lastFix as-is/null */ },
+        { enableHighAccuracy: true, maximumAge: 15000, timeout: 20000 }
+      );
+    } catch (e) { /* ignore */ }
+  }
+
+  // ---- photo capture stamp (burned into the JPEG) --------------------------
+  function pad2(n) { return (n < 10 ? '0' : '') + n; }
+  function stampTime(d) {
+    return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()) + ' ' +
+           pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds());
+  }
+  function tzAbbrev(d) {
+    try { var m = d.toLocaleTimeString('en-AU', { timeZoneName: 'short' }).match(/[A-Z]{2,5}$/); if (m) return m[0]; } catch (e) {}
+    var off = -d.getTimezoneOffset() / 60; return 'GMT' + (off >= 0 ? '+' : '') + off;
+  }
+  function mapsLink(geo) { return 'https://www.google.com/maps?q=' + geo.lat.toFixed(6) + ',' + geo.lon.toFixed(6); }
+  // Burn a bottom-strip stamp (time + position) onto a canvas already holding the frame.
+  function burnStamp(canvas, timeStr, geo) {
+    var cx = canvas.getContext('2d');
+    var l1 = timeStr;
+    var l2 = geo ? (geo.lat.toFixed(6) + ', ' + geo.lon.toFixed(6) + '  (±' + Math.round(geo.acc) + ' m)') : 'Location unavailable';
+    var scale = Math.max(1, canvas.width / 1000);
+    var fs = Math.round(22 * scale), pad = Math.round(10 * scale), band = fs * 2 + pad * 3;
+    cx.save();
+    cx.fillStyle = 'rgba(0,0,0,0.55)'; cx.fillRect(0, canvas.height - band, canvas.width, band);
+    cx.fillStyle = '#fff'; cx.textBaseline = 'top';
+    cx.font = 'bold ' + fs + 'px Helvetica, Arial, sans-serif';
+    cx.fillText(l1, pad, canvas.height - band + pad);
+    cx.font = fs + 'px Helvetica, Arial, sans-serif';
+    cx.fillText(l2, pad, canvas.height - band + pad * 2 + fs);
+    cx.restore();
+  }
+
+  // ---- Location map (OSM tiles; report "Defect Locations" section) ---------
+  // Best-effort: needs connectivity at generation time. OSM tiles send
+  // Access-Control-Allow-Origin:* so the bytes are fetchable + the canvas isn't
+  // tainted (crossOrigin='anonymous'). Returns null on any failure/offline so
+  // the report still generates (the defect list + per-photo links stand alone).
+  function lon2tile(lon, z) { return (lon + 180) / 360 * Math.pow(2, z); }
+  function lat2tile(lat, z) { var r = lat * Math.PI / 180; return (1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2 * Math.pow(2, z); }
+  function loadTile(url) {
+    return new Promise(function (resolve) {
+      var im = new Image(); im.crossOrigin = 'anonymous';
+      im.onload = function () { resolve(im); };
+      im.onerror = function () { resolve(null); };
+      im.src = url;
+    });
+  }
+  // Whether this inspection type gets the location-map section.
+  function matchesLocationMap(name) {
+    var terms = CFG.locationMapMatch || [], n = String(name || '').toLowerCase();
+    for (var i = 0; i < terms.length; i++) { if (n.indexOf(String(terms[i]).toLowerCase()) !== -1) return true; }
+    return false;
+  }
+  // Ordered list of GPS-tagged photos across the inspection -> numbered pins.
+  function geoPhotosOf(config, capture) {
+    var out = [], n = 0;
+    config.questions.slice().sort(byOrder).forEach(function (q) {
+      var a = capture.answers[q.id] || {};
+      (a.photos || []).forEach(function (p) {
+        if (p.geo) { n++; out.push({ n: n, text: String(q.text || '').replace(/^\s*\d+\.\s*/, '').slice(0, 70), lat: p.geo.lat, lon: p.geo.lon, acc: p.geo.acc, link: mapsLink(p.geo) }); }
+      });
+    });
+    return out;
+  }
+  // points: [{ n, lat, lon }] -> Promise<Blob|null> (stitched OSM map w/ pins).
+  function buildLocationMap(points) {
+    if (!points.length) return Promise.resolve(null);
+    var TILE = 256, MAXT = 3;   // ≤3×3 tiles (≤768px, ≤9 fetches) — gentle on OSM
+    var lats = points.map(function (p) { return p.lat; }), lons = points.map(function (p) { return p.lon; });
+    var minLat = Math.min.apply(null, lats), maxLat = Math.max.apply(null, lats);
+    var minLon = Math.min.apply(null, lons), maxLon = Math.max.apply(null, lons);
+    var padLat = Math.max((maxLat - minLat) * 0.15, 0.0015), padLon = Math.max((maxLon - minLon) * 0.15, 0.0015);
+    minLat -= padLat; maxLat += padLat; minLon -= padLon; maxLon += padLon;
+    // Highest zoom (≤18) whose FLOORED tile range fits within MAXT tiles/axis —
+    // bounding the actual fetch count (fractional span alone can spill to +1 tile).
+    var z = 18, tx0, tx1, ty0, ty1;
+    for (; z >= 1; z--) {
+      tx0 = Math.floor(lon2tile(minLon, z)); tx1 = Math.floor(lon2tile(maxLon, z));
+      ty0 = Math.floor(lat2tile(maxLat, z)); ty1 = Math.floor(lat2tile(minLat, z));
+      if ((tx1 - tx0 + 1) <= MAXT && (ty1 - ty0 + 1) <= MAXT) break;
+    }
+    var canvas = document.createElement('canvas');
+    canvas.width = (tx1 - tx0 + 1) * TILE; canvas.height = (ty1 - ty0 + 1) * TILE;
+    var cx = canvas.getContext('2d');
+    cx.fillStyle = '#e8ecef'; cx.fillRect(0, 0, canvas.width, canvas.height);
+    var jobs = [];
+    for (var tx = tx0; tx <= tx1; tx++) {
+      for (var ty = ty0; ty <= ty1; ty++) {
+        (function (tx, ty) {
+          jobs.push(loadTile('https://tile.openstreetmap.org/' + z + '/' + tx + '/' + ty + '.png').then(function (im) {
+            if (im) cx.drawImage(im, (tx - tx0) * TILE, (ty - ty0) * TILE);
+          }));
+        })(tx, ty);
+      }
+    }
+    return Promise.all(jobs).then(function () {
+      points.forEach(function (p) {
+        var px = (lon2tile(p.lon, z) - tx0) * TILE, py = (lat2tile(p.lat, z) - ty0) * TILE;
+        cx.beginPath(); cx.arc(px, py, 13, 0, 2 * Math.PI); cx.fillStyle = '#d0021b'; cx.fill();
+        cx.lineWidth = 2; cx.strokeStyle = '#fff'; cx.stroke();
+        cx.fillStyle = '#fff'; cx.font = 'bold 15px Helvetica, Arial, sans-serif';
+        cx.textAlign = 'center'; cx.textBaseline = 'middle'; cx.fillText(String(p.n), px, py);
+      });
+      var att = '© OpenStreetMap contributors';
+      cx.font = '12px Helvetica, Arial, sans-serif';
+      var w = cx.measureText(att).width + 10;
+      cx.fillStyle = 'rgba(255,255,255,0.8)'; cx.fillRect(canvas.width - w, canvas.height - 18, w, 18);
+      cx.fillStyle = '#333'; cx.textAlign = 'left'; cx.textBaseline = 'top'; cx.fillText(att, canvas.width - w + 5, canvas.height - 16);
+      return new Promise(function (res) { canvas.toBlob(function (b) { res(b); }, 'image/jpeg', 0.85); });
+    }).catch(function () { return null; });
   }
 
   // Navigating away from any screen tears the camera down; CaptureScreen restarts it.
@@ -278,7 +403,7 @@
       answers[qid] = {
         value: a.value, comment: a.comment || '', nextSeq: a.nextSeq || 1,
         // Store the photo BLOB (durable); the object URL is recreated on resume.
-        photos: (a.photos || []).map(function (p) { return { seq: p.seq, label: p.label, name: p.name, source: p.source, blob: p.blob }; })
+        photos: (a.photos || []).map(function (p) { return { seq: p.seq, label: p.label, name: p.name, source: p.source, blob: p.blob, geo: p.geo || null, when: p.when || null }; })
       };
     });
     return { draftId: draftId, masterContractId: job.masterContractId, contractNumber: job.contractNumber, address: job.address, inspTemplateId: config.inspTemplateId, name: config.name, inst: capture.inst || null, updatedAt: Date.now(), answers: answers };
@@ -289,7 +414,7 @@
       var a = draft.answers[qid];
       capture.answers[qid] = {
         value: a.value, comment: a.comment || '', nextSeq: a.nextSeq || ((a.photos ? a.photos.length : 0) + 1),
-        photos: (a.photos || []).map(function (p) { return { seq: p.seq, label: p.label, name: p.name, source: p.source, blob: p.blob, url: URL.createObjectURL(p.blob) }; })
+        photos: (a.photos || []).map(function (p) { return { seq: p.seq, label: p.label, name: p.name, source: p.source, blob: p.blob, url: URL.createObjectURL(p.blob), geo: p.geo || null, when: p.when || null }; })
       };
     });
     return capture;
@@ -418,8 +543,12 @@
       if (!video.videoWidth) return Promise.resolve(null);
       canvas.width = video.videoWidth; canvas.height = video.videoHeight;
       canvas.getContext('2d').drawImage(video, 0, 0);
+      var now = new Date();
+      var when = stampTime(now) + ' ' + tzAbbrev(now);
+      var geo = lastFix ? { lat: lastFix.lat, lon: lastFix.lon, acc: lastFix.acc } : null;
+      burnStamp(canvas, when, geo);
       return new Promise(function (resolve) {
-        canvas.toBlob(function (b) { resolve(b ? { blob: b, url: URL.createObjectURL(b) } : null); }, 'image/jpeg', 0.85);
+        canvas.toBlob(function (b) { resolve(b ? { blob: b, url: URL.createObjectURL(b), geo: geo, when: when } : null); }, 'image/jpeg', 0.85);
       });
     }
 
@@ -470,6 +599,7 @@
     ]));
     refresh();
     startCamera(video, camStatus);
+    startGeo();
   }
 
   function startCamera(video, statusEl) {
@@ -531,28 +661,38 @@
     });
     var captureBtn = el('button', { class: 'btn btn-capture', text: '📷 Capture', onClick: function () {
       Promise.resolve(ctx.grabFrame ? ctx.grabFrame() : null).then(function (f) {
-        if (f) addPhoto(f.blob, f.url, 'camera'); else fileInput.click();
+        if (f) addPhoto(f.blob, f.url, 'camera', { geo: f.geo, when: f.when }); else fileInput.click();
       });
     } });
     var libBtn = el('button', { class: 'btn-lib', text: 'Library', onClick: function () { fileInput.click(); } });
     node.appendChild(el('div', { class: 'field' }, [photoLabel, thumbs, el('div', { class: 'photo-actions' }, [captureBtn, libBtn]), fileInput]));
 
-    function addPhoto(blob, url, source) {
+    function addPhoto(blob, url, source, meta) {
       var seq = ans.nextSeq || (ans.photos.length + 1);
       ans.nextSeq = seq + 1;
       var shortQ = String(q.text || '').replace(/^\s*\d+\.\s*/, '').slice(0, 60);
       var label = ctx.contractNo + ' - ' + shortQ + ' (' + seq + ')';
-      ans.photos.push({ blob: blob, url: url, source: source, seq: seq, label: label, name: sanitizeName(label) + '.jpg' });
+      ans.photos.push({ blob: blob, url: url, source: source, seq: seq, label: label, name: sanitizeName(label) + '.jpg',
+        geo: (meta && meta.geo) || null, when: (meta && meta.when) || null });
       renderThumbs(); updateStates(); ctx.onChange();
     }
     function renderThumbs() {
       clear(thumbs);
       ans.photos.forEach(function (p, i) {
-        thumbs.appendChild(el('div', { class: 'thumb', title: p.label }, [
-          el('img', { src: p.url, alt: p.label }),
+        var image = el('img', { src: p.url, alt: p.label });
+        image.addEventListener('click', function () { openMarkup(p, function () { image.src = p.url; }); });
+        thumbs.appendChild(el('div', { class: 'thumb', title: p.label + ' — tap to mark up' }, [
+          image,
           el('span', { class: 'seq', text: '(' + p.seq + ')' }),
+          el('button', { class: 'thumb-edit', text: '✎', title: 'Mark up', onClick: function () { openMarkup(p, function () { image.src = p.url; }); } }),
           el('button', { class: 'thumb-x', text: '×', onClick: function () { URL.revokeObjectURL(p.url); ans.photos.splice(i, 1); renderThumbs(); updateStates(); ctx.onChange(); } })
         ]));
+      });
+    }
+    function openMarkup(p, after) {
+      PhotoMarkup(p, function (blob, url) {
+        URL.revokeObjectURL(p.url); p.blob = blob; p.url = url;
+        if (after) after(); renderThumbs(); ctx.onChange();
       });
     }
     function paintChoice() { Object.keys(choiceBtns).forEach(function (v) { choiceBtns[v].classList.toggle('sel', Number(v) === Number(ans.value)); }); }
@@ -602,7 +742,13 @@
         el('div', { class: 'q-text', text: q.text }),
         el('div', { class: 'review-ans', text: 'Answer: ' + valueLabel(rt, ans.value) }),
         (ans.comment && ans.comment.trim()) ? el('div', { class: 'subtle', text: 'Comment: ' + ans.comment }) : null,
-        (ans.photos && ans.photos.length) ? el('div', { class: 'thumbs' }, ans.photos.map(function (p) { return el('img', { class: 'thumb-sm', src: p.url, alt: p.name }); })) : null
+        (ans.photos && ans.photos.length) ? el('div', { class: 'thumbs' }, ans.photos.map(function (p) {
+          var im = el('img', { class: 'thumb-sm', src: p.url, alt: p.name, title: 'Tap to mark up' });
+          im.addEventListener('click', function () {
+            PhotoMarkup(p, function (blob, url) { URL.revokeObjectURL(p.url); p.blob = blob; p.url = url; ReviewScreen(job, config, capture); });
+          });
+          return im;
+        })) : null
       ]));
     });
     var finaliseBtn = el('button', { class: 'btn btn-primary', text: 'Finalise →', onClick: function () { FinaliseScreen(job, config, capture); } });
@@ -615,6 +761,75 @@
         finaliseBtn
       ])
     ]));
+  }
+
+  // ---- Photo mark-up editor ------------------------------------------------
+  // Full-screen overlay: annotate a captured photo (circle a crack, arrow to a
+  // defect) with freehand strokes at the photo's NATIVE resolution, so the ink
+  // stays crisp in the report. Save flattens the drawing into a new JPEG and
+  // hands it back via onSave(blob, url) — the caller replaces the photo in place.
+  function PhotoMarkup(photo, onSave) {
+    var img = new Image();
+    var canvas = el('canvas', { class: 'markup-canvas' });
+    var cx = canvas.getContext('2d');
+    var strokes = [], cur = null;
+    var color = '#ff2d2d', width = 6;
+
+    function drawStroke(s) {
+      cx.strokeStyle = s.color; cx.lineWidth = s.width; cx.lineCap = 'round'; cx.lineJoin = 'round';
+      cx.beginPath(); cx.moveTo(s.pts[0].x, s.pts[0].y);
+      for (var i = 1; i < s.pts.length; i++) cx.lineTo(s.pts[i].x, s.pts[i].y);
+      if (s.pts.length === 1) cx.lineTo(s.pts[0].x + 0.1, s.pts[0].y + 0.1); // a tap = a dot
+      cx.stroke();
+    }
+    function redraw() { if (!canvas.width) return; cx.drawImage(img, 0, 0, canvas.width, canvas.height); strokes.forEach(drawStroke); }
+    function pos(ev) {
+      var r = canvas.getBoundingClientRect();
+      return { x: (ev.clientX - r.left) * (canvas.width / r.width), y: (ev.clientY - r.top) * (canvas.height / r.height) };
+    }
+    function down(ev) { ev.preventDefault(); cur = { color: color, width: width, pts: [pos(ev)] }; strokes.push(cur); if (canvas.setPointerCapture && ev.pointerId != null) { try { canvas.setPointerCapture(ev.pointerId); } catch (e) {} } redraw(); }
+    function move(ev) { if (!cur) return; ev.preventDefault(); cur.pts.push(pos(ev)); redraw(); }
+    function up() { cur = null; }
+    canvas.addEventListener('pointerdown', down);
+    canvas.addEventListener('pointermove', move);
+    canvas.addEventListener('pointerup', up);
+    canvas.addEventListener('pointerleave', up);
+
+    img.onload = function () { canvas.width = img.naturalWidth || 1000; canvas.height = img.naturalHeight || 750; width = Math.max(4, Math.round(canvas.width / 200)); redraw(); };
+    img.src = photo.url;
+
+    var overlay = el('div', { class: 'markup-overlay' });
+    function close() { if (overlay.parentNode) overlay.parentNode.removeChild(overlay); }
+
+    var swatches = [['#ff2d2d', 'red'], ['#ffd400', 'yellow'], ['#ffffff', 'white'], ['#111111', 'black']].map(function (c) {
+      var b = el('button', { class: 'mk-swatch' + (c[0] === color ? ' sel' : ''), title: c[1] });
+      b.style.background = c[0];
+      b.addEventListener('click', function () { color = c[0]; swatches.forEach(function (x) { x.classList.remove('sel'); }); b.classList.add('sel'); });
+      return b;
+    });
+    var wBtns = [['S', 0.5], ['M', 1], ['L', 2]].map(function (w) {
+      var b = el('button', { class: 'mk-w' + (w[1] === 1 ? ' sel' : ''), text: w[0] });
+      b.addEventListener('click', function () { width = Math.max(4, Math.round((canvas.width / 200) * w[1])); wBtns.forEach(function (x) { x.classList.remove('sel'); }); b.classList.add('sel'); });
+      return b;
+    });
+    var saveBtn = el('button', { class: 'btn btn-primary', text: 'Save', onClick: function () {
+      canvas.toBlob(function (b) { if (b) onSave(b, URL.createObjectURL(b)); close(); }, 'image/jpeg', 0.9);
+    } });
+
+    overlay.appendChild(el('div', { class: 'markup-stage' }, [canvas]));
+    overlay.appendChild(el('div', { class: 'markup-bar' }, [
+      el('div', { class: 'mk-group' }, swatches),
+      el('div', { class: 'mk-group' }, wBtns),
+      el('div', { class: 'mk-group' }, [
+        el('button', { class: 'btn-lib', text: '↶ Undo', onClick: function () { strokes.pop(); redraw(); } }),
+        el('button', { class: 'btn-lib', text: 'Clear', onClick: function () { strokes = []; redraw(); } })
+      ]),
+      el('div', { class: 'mk-group mk-right' }, [
+        el('button', { class: 'btn-lib', text: 'Cancel', onClick: close }),
+        saveBtn
+      ])
+    ]));
+    document.body.appendChild(overlay);
   }
 
   // ---- Signature pad (canvas) ----------------------------------------------
@@ -661,6 +876,8 @@
     return {
       title: config.name,
       logo: sig.logo || null,
+      locationMap: sig.locationMap || null,
+      defects: (sig.defects && sig.defects.length) ? sig.defects : null,
       contract: { number: job.contractNumber, address: job.address, client: job.client, stage: job.stage, inspectionType: config.name, supervisor: sig.supName, date: new Date().toISOString().slice(0, 10) },
       questions: questions, signatures: signatures
     };
@@ -685,7 +902,22 @@
         var supBlob = await supPad.getBlob();
         var cliBlob = cliPad.isEmpty() ? null : await cliPad.getBlob();
         var logoBlob = await fetchLogoBlob(CFG.logo);   // null if none/unreachable
-        var model = buildDocModel(job, config, capture, { supName: supName.value.trim(), supBlob: supBlob, cliName: cliName.value.trim(), cliBlob: cliBlob, logo: logoBlob });
+        // Location map + defect list — only for Kerb & Footpath-style reports
+        // (CFG.locationMapMatch) that have GPS-tagged photos. Map is best-effort
+        // (needs connectivity); the defect list stands alone if the map is null.
+        var locationMap = null, defects = null;
+        if (matchesLocationMap(config.name)) {
+          var geoPts = geoPhotosOf(config, capture);
+          if (geoPts.length) {
+            defects = geoPts;
+            if (navigator.onLine !== false) {
+              genBtn.textContent = 'Building map…';
+              try { locationMap = await buildLocationMap(geoPts); } catch (e) { locationMap = null; }
+              genBtn.textContent = 'Generating…';
+            }
+          }
+        }
+        var model = buildDocModel(job, config, capture, { supName: supName.value.trim(), supBlob: supBlob, cliName: cliName.value.trim(), cliBlob: cliBlob, logo: logoBlob, locationMap: locationMap, defects: defects });
         var base = sanitizeName(config.name + ' ' + job.contractNumber + ' ' + docStamp());
         var pdf = await window.CHPdf.buildPdf(model);   // primary report
         var odt = await window.CHDoc.buildOdt(model);   // editable backup/source
@@ -742,7 +974,10 @@
     config.questions.slice().sort(byOrder).forEach(function (q) {
       var a = capture.answers[q.id] || {};
       (a.photos || []).forEach(function (p) {
-        items.push({ key: 'p' + q.id + '_' + p.seq, type: 'Photo', blob: p.blob, filename: p.name, title: p.label, description: '', categoryId: CFG.docCategories.inspectionPhotos });
+        var pd = [];
+        if (p.when) pd.push('Taken ' + p.when);
+        if (p.geo) pd.push('Location ' + p.geo.lat.toFixed(6) + ', ' + p.geo.lon.toFixed(6) + ' (±' + Math.round(p.geo.acc) + 'm) ' + mapsLink(p.geo));
+        items.push({ key: 'p' + q.id + '_' + p.seq, type: 'Photo', blob: p.blob, filename: p.name, title: p.label, description: pd.join(' | '), categoryId: CFG.docCategories.inspectionPhotos });
       });
     });
     return items;
