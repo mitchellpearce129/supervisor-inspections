@@ -147,7 +147,9 @@
    *   SEARCH /V2/MasterContracts/List
    * Note there is NO supervisor filter in the criteria — the server scopes the
    * result to the *current* user, so this returns that supervisor's jobs.
-   * jobTypes ['C'] = Construction; statuses ['A','F'] = the active set.
+   * jobTypes ['C'] = Construction; statuses ['A','F','P'] — Active, Final, and
+   * Pending (P added 2026-07-20: Kerb & Footpath inspections fall due while the
+   * job is still Pending, so P-status jobs must appear in the supervisor list).
    *
    * Base scalars (masterContractId, contractNumber, lotAddress) and each
    * requested node's base scalars come back automatically; only nested nodes
@@ -156,7 +158,7 @@
   async function listMyConstructionJobs() {
     return search('/V2/MasterContracts/List', {
       criteria: {
-        anyContract: { jobTypes: ['C'], statuses: ['A', 'F'], includeInactive: 'false' },
+        anyContract: { jobTypes: ['C'], statuses: ['A', 'F', 'P'], includeInactive: 'false' },
         includeInactive: 'false'
       },
       // IMPORTANT: `fast: true` (as the SPA sends) SUPPRESSES the stage lookup —

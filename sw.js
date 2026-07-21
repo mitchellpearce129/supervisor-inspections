@@ -3,7 +3,7 @@
  * Caches the app shell so the UI loads with no connectivity. It deliberately
  * NEVER caches ClickHome API responses — those must always be live.
  * ==========================================================================*/
-var CACHE = 'supervisor-inspections-v6';
+var CACHE = 'supervisor-inspections-v7';
 var SHELL = [
   './',
   './index.html',
