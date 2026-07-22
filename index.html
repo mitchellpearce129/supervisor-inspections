@@ -1,26 +1,476 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <meta name="theme-color" content="#0b5fa5" />
-  <meta name="apple-mobile-web-app-capable" content="yes" />
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-  <meta name="apple-mobile-web-app-title" content="Inspections" />
-  <title>Supervisor Inspections</title>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>REWMitch</title>
   <link rel="manifest" href="manifest.json" />
-  <link rel="apple-touch-icon" href="icons/icon.svg" />
-  <link rel="stylesheet" href="css/app.css" />
+  <meta name="theme-color" content="#0a0a0d" />
+  <link rel="apple-touch-icon" href="icon-192.png" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black" />
+  <meta name="apple-mobile-web-app-title" content="REWMitch" />
+  <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <div id="app"><noscript>This app requires JavaScript.</noscript></div>
+  <header>
+    <h1>REWMitch</h1>
+    <p class="sub">Relative FR · phase · group delay · driver-offset · waterfall — computed on-device.
+      Not a calibrated SPL meter.</p>
+  </header>
 
-  <!-- classic scripts, load order matters -->
-  <script src="js/config.js"></script>
-  <script src="js/store.js"></script>
-  <script src="js/docgen.js"></script>
-  <script src="js/pdfgen.js"></script>
-  <script src="js/api.js"></script>
-  <script src="js/app.js"></script>
+  <nav class="tabs">
+    <button data-tab="guide" class="active">Guide</button>
+    <button data-tab="measure">Measure</button>
+    <button data-tab="traces">Traces</button>
+    <button data-tab="setup">Setup / Help</button>
+    <button data-tab="about">About</button>
+  </nav>
+
+  <!-- ================= GUIDE (wizard) ================= -->
+  <section id="tab-guide" class="tab active">
+    <div id="wizard"></div>
+  </section>
+
+  <!-- ================= MEASURE ================= -->
+  <section id="tab-measure" class="tab">
+
+    <div class="card init-card">
+      <button id="btnInit" class="primary">Enable Mic &amp; Audio</button>
+      <p id="status" class="status">Tap to grant mic access (needs HTTPS or localhost).</p>
+      <p id="micInfo" class="mic-info"></p>
+    </div>
+
+    <div class="card" id="deviceCard">
+      <label class="dev-label">Input device
+        <select id="inputDevice"><option>— enable mic first —</option></select>
+      </label>
+      <div class="cal-row">
+        <label class="file-btn">📄 Load mic calibration file
+          <input id="calFile" type="file" accept=".txt,.frd,.cal,.csv,text/plain" hidden />
+        </label>
+        <button id="calClear" class="secondary cal-clear">Clear</button>
+      </div>
+      <p id="calStatus" class="hint">No calibration loaded — measurements are relative (uncalibrated mic).
+        Load a UMIK/REW <code>.txt</code>/<code>.frd</code> to correct magnitude.</p>
+    </div>
+
+    <div class="card">
+      <div class="mode-row" id="modeRow">
+        <button data-mode="standard" class="mode active">Standard</button>
+        <button data-mode="nearfield" class="mode">Nearfield</button>
+        <button data-mode="offset" class="mode">Driver-Offset</button>
+        <button data-mode="distortion" class="mode">Distortion</button>
+        <button data-mode="waterfall" class="mode">Waterfall</button>
+      </div>
+      <p id="modeHint" class="hint"></p>
+    </div>
+
+    <div class="card">
+      <label class="driver-type-row">Driver under test
+        <select id="driverType">
+          <option value="full" selected>Whole speaker (crossover in place)</option>
+          <option value="woofer">Woofer (individual driver)</option>
+          <option value="midrange">Midrange (individual driver)</option>
+          <option value="tweeter">Tweeter (individual driver) ⚠</option>
+        </select>
+      </label>
+      <div class="meter-wrap">
+        <span class="meter-label">Input</span>
+        <div class="meter"><div id="meterBar" class="meter-bar"></div></div>
+        <span id="meterText" class="meter-text">—</span>
+      </div>
+      <button id="btnPlay" class="primary big" disabled>▶ Play Sweep</button>
+      <button id="btnSanity" class="secondary" disabled>Repeatability check</button>
+      <p id="measureStatus" class="status"></p>
+    </div>
+
+    <!-- mode-specific controls injected here -->
+    <div id="modePanel"></div>
+
+    <div class="card plot-card">
+      <div class="view-toggle">
+        <button data-view="mag" class="active">Magnitude</button>
+        <button data-view="phase">Phase</button>
+        <button data-view="gd">Group delay</button>
+      </div>
+      <canvas id="plot"></canvas>
+      <div class="hold-row">
+        <input id="traceName" type="text" placeholder="Trace name (e.g. baseline)" />
+        <button id="btnHold" class="secondary" disabled>Hold / Add to overlay</button>
+      </div>
+    </div>
+
+    <details class="card">
+      <summary>Sweep &amp; analysis settings</summary>
+      <div class="settings-grid">
+        <label>Start freq (Hz)<input id="f1" type="number" value="20" min="10" max="500" /></label>
+        <label>End freq (Hz)<input id="f2" type="number" value="20000" min="1000" max="24000" /></label>
+        <label>Duration (s)<input id="duration" type="number" value="5" min="1" max="15" step="0.5" /></label>
+        <label>Output level<input id="level" type="range" min="0" max="1" step="0.01" value="0.5" /></label>
+        <label>Gate pre (ms)<input id="gatePre" type="number" value="1" min="0" max="10" step="0.5" /></label>
+        <label>Gate post (ms)<input id="gatePost" type="number" value="5" min="1" max="50" step="0.5" /></label>
+        <label>Smoothing
+          <select id="smoothing">
+            <option value="0">None</option>
+            <option value="3">1/3 octave</option>
+            <option value="6" selected>1/6 octave</option>
+            <option value="12">1/12 octave</option>
+          </select>
+        </label>
+      </div>
+      <p class="hint">Valid above <span id="gateFloor">200</span> Hz · sample rate
+        <span id="sampleRate">—</span> Hz</p>
+    </details>
+  </section>
+
+  <!-- ================= TRACES ================= -->
+  <section id="tab-traces" class="tab">
+    <div class="card">
+      <h2>Held traces</h2>
+      <p class="hint">Freeze a trace, change a component, drop the next one on top. This overlay
+        is the whole point (spec §5).</p>
+      <div id="traceList" class="trace-list"><p class="empty">No traces held yet.</p></div>
+    </div>
+  </section>
+
+  <!-- ================= SETUP / HELP ================= -->
+  <section id="tab-setup" class="tab">
+    <div class="card">
+      <h2>Signal chain</h2>
+      <pre class="chain">
+ iPhone/laptop ─(wired DAC)─▶ amp LINE in ─▶ speakers ─▶ room ─▶ built-in mic
+      │                                                              │
+      └──────────── generates sweep                 records return ──┘</pre>
+      <ul class="help">
+        <li><strong>Wired output only — never Bluetooth.</strong> A2DP re-encodes through a lossy
+          codec that bakes an uncontrolled EQ and time-smear into every trace. Latency is
+          survivable; codec colouration is fatal.</li>
+        <li><strong>Line-level input only</strong> (Aux / CD / Tape). <strong>Never phono/turntable</strong>
+          — it applies RIAA EQ and wrecks the signal.</li>
+        <li>iPhone 15+ : USB-C DAC → 3.5mm-to-RCA → line in. iPhone 14− : Lightning-to-3.5mm → RCA.</li>
+        <li>Mic = the device's own built-in mic, at the listening position (or near the cone for
+          Nearfield / bass work).</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h2>Validity &amp; the honesty caveats</h2>
+      <ul class="help">
+        <li>This is a <strong>relative</strong> bench, not a calibrated SPL meter. No absolute FR,
+          no SPL, no impedance. Mic error is a magnitude error — so timing/phase and A/B
+          comparisons are immune.</li>
+        <li><strong>Biggest risk:</strong> Safari/Chrome may quietly re-apply AGC / noise-suppression /
+          echo-cancellation despite our constraints. Run the <em>Repeatability check</em> — two
+          back-to-back sweeps should overlay within ~1 dB. If they don't, the input is being
+          processed and the numbers can't be trusted.</li>
+        <li>Gate length sets the low-frequency limit: valid above ≈ 1000 / (gate-post ms) Hz.
+          For bass, use <strong>Nearfield</strong> mode (mic at the cone) to dodge the room.</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h2>Mic calibration &amp; using a UMIK</h2>
+      <ul class="help">
+        <li>The <strong>phone/laptop mic is uncalibrated</strong> — its error is a <em>magnitude</em>
+          error, so timing, phase, driver-offset and A/B comparisons are already valid. What's NOT
+          valid is the absolute <em>shape</em> of the frequency response.</li>
+        <li>Load a <strong>calibration file</strong> (miniDSP UMIK <code>.txt</code>, or REW/generic
+          <code>.frd</code>/<code>.cal</code>) on the Measure tab to correct the magnitude shape.
+          With a <strong>UMIK-1</strong> plugged into a laptop's USB and selected as the Input device,
+          you get a genuinely <strong>calibrated relative frequency response</strong> — the kind that
+          drops into VituixCAD.</li>
+        <li><strong>For VituixCAD, the hard part is timing between drivers, not magnitude.</strong> A
+          UMIK is a single USB channel, so it can't do a dual-channel loopback timing reference. Use
+          the <strong>Driver-Offset</strong> mode here to get the acoustic z-offset in mm directly —
+          that's the number VituixCAD asks for and most people just guess. Measure each driver from a
+          fixed mic position and don't move the mic between captures.</li>
+        <li><strong>Absolute SPL is still out of scope.</strong> The UMIK's Sens Factor is read and
+          shown, but a browser can't reliably know the input gain chain, so this stays a
+          calibrated-<em>relative</em> bench. For true SPL, use REW on a computer.</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h2>REWINA — audio guidance (optional)</h2>
+      <p class="hint">A voice that narrates each step's purpose, wiring and safety. <strong>Off by
+        default.</strong> Its loudness is only a rough cue — the authoritative level setup is the
+        <strong>Test levels</strong> button plus the input meter. (Safety warnings are always spoken,
+        even with guidance off.)</p>
+      <label class="ref-toggle"><input type="checkbox" id="rewinaToggle" /> Enable REWINA audio guidance</label>
+      <label class="driver-type-row">Voice
+        <select id="rewinaVoice"><option value="">Auto (REWINA default)</option></select></label>
+      <button id="rewinaTest" class="secondary" style="margin-top:8px">🔊 Test my levels with REWINA</button>
+    </div>
+  </section>
+
+  <!-- ================= ABOUT ================= -->
+  <section id="tab-about" class="tab">
+    <div class="card">
+      <h2>About REWMitch — how it works, and its limits</h2>
+      <p>REWMitch is an on-device speaker-measurement bench: it plays an exponential sine sweep,
+        records the room/driver on the device mic, and derives the impulse response, frequency
+        response, phase, group delay, driver time-offset, harmonic distortion and a decay waterfall —
+        all client-side, nothing uploaded.</p>
+      <p><strong>The one idea everything rests on:</strong> the device mic is <em>uncalibrated</em>,
+        but its error is a <em>magnitude</em> error. So anything time- or phase-based, and anything
+        done as an A/B comparison at one fixed mic position, is unaffected by the mic. REWMitch is
+        therefore a <strong>relative &amp; timing bench</strong>, not a calibrated SPL meter — and it
+        is designed honestly around that.</p>
+    </div>
+
+    <div class="card">
+      <h2>Reviewer questions — answered directly</h2>
+      <p class="hint">Specific points raised by an experienced tester. Thank you — this is exactly the
+        scrutiny that makes the tool honest.</p>
+      <div class="qa">
+        <p class="q">Q. REW has "Adjust clock with acoustic/loopback ref" — a second timing marker at
+          the end of the sweep to compensate drift between async capture/playback clocks, verified by
+          running two sweep lengths and checking the relative phase matches. Do you do this?</p>
+        <p class="a">A. Yes — REWMitch does exactly this (since v2.0). It plays a timing marker at the
+          <em>start</em> AND <em>end</em> of the sweep, measures how far the marker gap stretched in the
+          recording (the clock ratio, in ppm), and resamples the recording back to the playback clock
+          before deconvolution. It's a no-op when clocks are shared (deadband) and rejects implausible
+          ratios. Your exact verification method is built in: a dev self-test
+          (<code>rewmitchDriftSelfTest()</code> in the browser console) runs the same fixed setup at
+          <strong>two sweep lengths (1 s and 4 s)</strong> and reports the group-delay RMS difference
+          with compensation ON vs OFF — ON should collapse to a few µs; OFF should visibly diverge, and
+          grow toward HF and with the longer sweep. The Standard-mode status line reports "clock drift
+          corrected +X ppm" or "clocks in sync." <em>Ref: REW Help — acoustic/loopback timing reference;
+          AVNirvana forum.</em></p>
+
+        <p class="q">Q. I can hear the markers and sweep and see the input meter, but I don't get any
+          magnitude or phase graph.</p>
+        <p class="a">A. Two things — and the first is that <strong>you found a real bug, now fixed
+          (v10).</strong> The Measure-tab plot canvas was created while its tab was hidden at page load,
+          so it stayed zero-sized and Standard-mode graphs rendered blank. It now re-measures itself
+          whenever the tab is shown or a trace is drawn, so the plots appear. Genuinely — thank you for
+          surfacing it. Second, if you happened to be in <strong>Driver-Offset mode</strong>, that one
+          is timing-only by design: it outputs a single z-offset in millimetres (after you capture both
+          drivers and press <em>Compute offset</em>), not a graph — the markers you hear are its acoustic
+          reference. Magnitude / phase / group-delay curves live on the <strong>Measure tab → Standard
+          mode</strong> (Magnitude / Phase / Group-delay toggles above the plot); the wizard's
+          <em>Relative phase</em> test overlays the two drivers' phase. (Also fair that the beginner
+          "Guide" tab is the default landing — an expert wants the Measure tab.)</p>
+
+        <p class="q">Q. I hear the markers and sweep from BOTH L and R. The acoustic reference should use
+          one channel for the speaker under test and the other for a (HF-capable) timing-reference speaker.</p>
+        <p class="a">A. Correct — and there are two different "reference" mechanisms, so which applies
+          depends on the mode:
+          <br>• <strong>Driver-Offset (true two-channel acoustic reference):</strong> the timing marker
+          goes to the <em>reference</em> channel (your fixed, HF-capable other speaker — it must
+          reproduce the 2–4 kHz marker) and the sweep to the <em>test</em> channel; they're separate
+          channels, and the reference channel is L/R-selectable in the offset panel. If you hear
+          <em>both</em> signals from <em>both</em> sides, your output is summing to mono (single speaker,
+          mono DAC, or the DUT wired to both channels) — the offset needs true stereo with the reference
+          speaker on the opposite channel.
+          <br>• <strong>Clock-drift (Standard/linear):</strong> here the two drift markers ride on the
+          <em>same</em> channel as the sweep — they only need to share the play/record clock, not a
+          separate speaker — so you'll hear them from the measured speaker (and from both sides, because
+          that path is mono). That's expected. A REW-style <em>separate reference-channel</em> option for
+          the linear path is a sensible future addition. <em>Ref: REW Help; AVNirvana forum.</em></p>
+
+        <p class="q">Q. There's a mic calibration file but no soundcard/DAC calibration file.</p>
+        <p class="a">A. True — mic cal is supported, output/soundcard cal isn't (yet). Reasoning: a
+          competent USB DAC/dongle is essentially ruler-flat across the audio band, and whatever it does
+          is <em>identical in every capture</em>, so it cancels in all relative, A/B and driver-offset
+          (timing) results — which is what REWMitch is for. It would only bias the absolute magnitude
+          shape, which we already don't claim. But it's a fair "nice to have," and it's easy (same
+          mechanism as the mic cal — load an <code>.frd</code>/<code>.txt</code> and subtract), so it's
+          on the shortlist.</p>
+
+        <p class="q">Q. For the mic calibration file — are you ignoring the phase and taking only the
+          magnitude of the mic response?</p>
+        <p class="a">A. Yes, exactly. The parser reads the phase column if the file has one, but only the
+          <strong>magnitude</strong> correction is applied; the phase is not. Rationale: the common files
+          (miniDSP UMIK) are magnitude-only anyway, a measurement mic's own phase error is small, and —
+          being a fixed characteristic of the mic — it cancels in relative/A-B and in driver-offset
+          timing (both drivers see the same mic). It would matter only for absolute single-measurement
+          phase; applying it is straightforward if your cal file genuinely carries phase — say the word
+          and we'll enable it.</p>
+
+        <p class="q">Q. What time-gating window function does the tool use (rectangular / Hamming /
+          Hann / Blackman-Harris…)?</p>
+        <p class="a">A. A <strong>Tukey window</strong> (cosine-tapered rectangular) — not a plain Hann
+          or Blackman-Harris over the whole gate. Concretely: a <em>flat (rectangular, gain 1.0) centre</em>
+          with a raised-cosine (Hann) half-taper on each edge; the taper lengths equal the pre-gate
+          (default 1 ms) and post-gate (default 5 ms). Why: the flat centre preserves the direct-sound
+          energy right at the impulse peak (a full-length Hann/Blackman-Harris would attenuate the peak
+          itself and bias level/timing), while the cosine edges avoid the spectral leakage a hard
+          rectangular truncation would cause. <em>Ref: F. J. Harris, "On the Use of Windows for Harmonic
+          Analysis with the Discrete Fourier Transform," Proc. IEEE, 1978; REW Help — measurement windows.</em></p>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Strengths</h2>
+      <ul class="help">
+        <li><strong>Driver time-offset (the headline).</strong> Pure time-of-flight, zero calibration
+          needed. Self-referenced against a fixed reference speaker so play/record latency and clock
+          jitter cancel. Reports the acoustic z-offset in mm with an honest ± error bar.</li>
+        <li><strong>Relative phase &amp; group delay</strong> between two drivers at one mic position —
+          the crossover-summing question — is immune to the mic's magnitude error.</li>
+        <li><strong>Before/after &amp; A/B magnitude.</strong> The <em>difference</em> between two
+          traces (a stuffing change, a resistor, a port bung) is trustworthy even though the absolute
+          curve isn't.</li>
+        <li><strong>Gross distortion</strong> (breakup, buzzes, rattles) via the log-sweep harmonic
+          method.</li>
+        <li><strong>Clock-drift compensation</strong> for separate play/record clocks (USB DAC out +
+          phone mic in), which otherwise smears HF phase.</li>
+        <li><strong>Runs anywhere, offline</strong>, installs as an app, no account, no data leaves the
+          device.</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h2>Limitations (read these)</h2>
+      <ul class="help">
+        <li><strong>No absolute SPL and no calibrated absolute frequency-response shape</strong> from
+          the built-in mic. Load a mic calibration file (UMIK/REW) to fix the <em>shape</em>; absolute
+          SPL is still out of scope (see Q&amp;A).</li>
+        <li><strong>Gated far-field FR is only valid above ≈ 1000 / (gate-post ms) Hz</strong> (default
+          gate → ~200 Hz). Below that, use Nearfield mode, which shows <em>shape</em>, not level.</li>
+        <li><strong>Distortion is limited by the mic's own distortion floor</strong> — good for gross
+          faults, not subtle THD figures.</li>
+        <li><strong>The browser may quietly re-apply AGC / noise-suppression / echo-cancellation.</strong>
+          Always run the Repeatability check first (two sweeps should overlay within ~1 dB).</li>
+        <li><strong>Not a crossover simulator.</strong> REWMitch measures; tools like VituixCAD do the
+          driver summation, diffraction and merging.</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h2>What's under the hood (values &amp; filters)</h2>
+      <div class="about-table-wrap"><table class="about-table">
+        <tr><th>Stage</th><th>What REWMitch actually does</th></tr>
+        <tr><td>Sample rate</td><td>Requests 48 kHz; uses the actual <code>AudioContext.sampleRate</code> everywhere.</td></tr>
+        <tr><td>Mic input</td><td><code>getUserMedia</code> with echoCancellation / noiseSuppression / autoGainControl all <code>false</code>, mono.</td></tr>
+        <tr><td>Stimulus</td><td>Exponential (log) sine sweep — Farina ESS. Default 20 Hz–20 kHz, 5 s, 20 ms raised-cosine fade in/out. (Tweeter pairs in the wizard default to a 500 Hz start for protection.)</td></tr>
+        <tr><td>Linear deconvolution</td><td>Frequency-domain <em>regularised</em> inverse filter: IR = IFFT( Rec·conj(S) / (|S|² + ε) ), ε at −60 dB of max |S|². Latency-immune. FFT = own radix-2 Cooley–Tukey.</td></tr>
+        <tr><td>Gate / window</td><td><strong>Tukey (cosine-tapered rectangular):</strong> flat centre, raised-cosine (Hann) tapers on each edge; taper lengths = pre 1 ms / post 5 ms default (Nearfield 25 ms). Low-frequency validity ≈ 1000 / (post ms) Hz, shown live. Single fixed gate — see "what we don't do".</td></tr>
+        <tr><td>Smoothing</td><td>Fractional-octave, <em>power-averaged</em>: 1/3, 1/6 (default), 1/12, or none.</td></tr>
+        <tr><td>Magnitude reference</td><td>Normalised to 0 dB over the 200 Hz–2 kHz band (it's relative).</td></tr>
+        <tr><td>Phase / group delay</td><td>Phase straight from the complex gated spectrum (displayed wrapped ±180°). Group delay = −dφ/dω on the unwrapped phase, in ms. No minimum-phase extraction.</td></tr>
+        <tr><td>Driver offset</td><td>Self-referenced: a 2 ms, 2–4 kHz Hann marker on the reference channel + sweep on the test channel, one recording. Marker found by matched-filter cross-correlation (sub-sample parabolic); driver by the deconvolved IR peak in a bounded window [t_ref, t_ref+40 ms] with an SNR gate ≥ 12 dB. z = (t_drvB − t_refB) − (t_drvA − t_refA). Speed of sound fixed at 343 m/s (≈20 °C). 8 averages, aggregated by median + MAD (3.5σ) robust mean; repeatability warns above 15 mm.</td></tr>
+        <tr><td>Distortion</td><td>Farina time-reversed inverse filter (+6 dB/oct whitening); harmonics separate into the pre-impulse region at Δtₙ = T·ln(n)/ln(f₂/f₁); plotted as level vs fundamental frequency, up to H5 (H3/H5/H7 selectable).</td></tr>
+        <tr><td>Waterfall (CSD)</td><td>Successive raised-cosine-windowed slices of the IR tail, FFT of each.</td></tr>
+        <tr><td>Clock-drift comp</td><td>Dual acoustic markers (start + end); ratio = measured-gap / expected-gap; recording resampled with a 32-tap Blackman–Harris windowed-sinc. Deadband 2 ppm (skip when shared clock); reject &gt; 5000 ppm. Needs a sweep ≥ ~1 s.</td></tr>
+        <tr><td>Mic calibration</td><td>Optional UMIK/REW <code>.txt</code>/<code>.frd</code> file; the mic's <strong>magnitude</strong> deviation is subtracted. A phase column, if present, is parsed but <em>not</em> applied. The UMIK "Sens Factor" is read but <em>not</em> used for absolute SPL. No separate soundcard/DAC calibration (see "what we don't do").</td></tr>
+      </table></div>
+    </div>
+
+    <div class="card">
+      <h2>Q&amp;A (for the technically minded)</h2>
+      <div class="qa">
+        <p class="q">Q. Which deconvolution method — division or the matched/inverse filter?</p>
+        <p class="a">A. Two, deliberately. For FR/phase/group delay it's <em>frequency-domain regularised
+          division</em> (IR = Rec·conj(S)/(|S|²+ε)), because it's latency-immune and needs no harmonic
+          separation. For distortion it's Farina's <em>time-reversed inverse filter</em>, because that's
+          what makes the harmonics fall into the pre-impulse region so they can be isolated
+          [Farina 2000].</p>
+
+        <p class="q">Q. Do you window the impulse response? With what?</p>
+        <p class="a">A. Yes — a raised-cosine gate, 1 ms before / 5 ms after the peak by default (wider
+          in Nearfield). That's a single, fixed, transparent gate. It trades low-frequency resolution
+          for room-reflection rejection: valid above ≈ 1000/(post-ms) Hz, shown on screen
+          [Müller &amp; Massarani 2001; REW Help].</p>
+
+        <p class="q">Q. Do you use frequency-dependent (psychoacoustic) windowing, like REW's FDW?</p>
+        <p class="a">A. No — see "what we deliberately don't do" below.</p>
+
+        <p class="q">Q. Is the phase minimum-phase, excess-phase, or measured?</p>
+        <p class="a">A. Measured (total) phase, straight from the complex spectrum, plus group delay.
+          We don't split out minimum-phase/excess-phase (Hilbert) — again, see below.</p>
+
+        <p class="q">Q. What smoothing, exactly?</p>
+        <p class="a">A. Fractional-octave, averaged in the <em>power</em> domain (not dB), selectable
+          1/3, 1/6 (default), 1/12, or off. No variable/psychoacoustic ("Var") smoothing.</p>
+
+        <p class="q">Q. What speed of sound do you assume for the offset-to-mm conversion?</p>
+        <p class="a">A. A fixed 343 m/s (≈20 °C). The true value is c ≈ 331.3 + 0.606·T(°C) m/s, so the
+          error is ≈ 0.17 %/°C — e.g. at 26 °C you'd read ~1 % high. For a 20 mm offset that's ~0.2 mm,
+          well under the measurement's own error bar, so it isn't user-settable (yet). Humidity's effect
+          is far smaller again.</p>
+
+        <p class="q">Q. How is the offset made immune to latency/clock jitter?</p>
+        <p class="a">A. Each capture contains both the acoustic reference marker and the driver's sweep,
+          so both share the same play/record delay; subtracting the two arrivals cancels it. The final
+          z = (drvB − refB) − (drvA − refA) also cancels the reference-speaker distance — it need only
+          stay constant. Peak timing is sub-sample (parabolic on the cross-correlation / IR peak).</p>
+
+        <p class="q">Q. Why not a loopback/electrical timing reference?</p>
+        <p class="a">A. Phones/tablets have one input channel, so a dual-channel electrical loopback
+          isn't possible. The acoustic marker is the single-channel equivalent, and for clock <em>drift</em>
+          a second marker at the end of the sweep measures the timebase stretch directly
+          [REW acoustic timing reference].</p>
+
+        <p class="q">Q. How trustworthy is the distortion?</p>
+        <p class="a">A. For <em>gross</em> faults, good; for absolute THD numbers, treat as indicative.
+          It's bounded by the device mic's own distortion, which is typically far worse than a good
+          driver's [Farina 2000].</p>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>What we deliberately DON'T do (and why)</h2>
+      <p class="hint">Each of these was a conscious call, with the trade-off stated and a reputable
+        reference to check it against.</p>
+      <ul class="help">
+        <li><strong>Absolute SPL.</strong> A browser hands us normalised samples with an unknown input
+          gain, and the built-in mic has no sensitivity reference. Real SPL needs a calibrated mic +
+          a known reference level (e.g. 94 dB @ 1 kHz) or a UMIK Sens-Factor pipeline. <em>Ref: REW
+          Help — SPL calibration; miniDSP UMIK-1 (minidsp.com).</em></li>
+        <li><strong>Frequency-dependent / psychoacoustic windowing (FDW).</strong> A single fixed gate
+          is transparent and predictable; FDW is powerful but can hide or invent detail if misapplied,
+          and adds a per-frequency window we didn't want to hide behind. If you need it, REW does it
+          well. <em>Ref: REW Help — "Frequency Dependent Window".</em></li>
+        <li><strong>Minimum-phase / excess-phase separation.</strong> We show the measured phase and
+          group delay as-is rather than deriving a minimum-phase model (Hilbert transform) — fewer
+          hidden assumptions for a relative bench. <em>Ref: REW Help — minimum phase; Müller &amp;
+          Massarani 2001.</em></li>
+        <li><strong>Nearfield-to-farfield scaling, baffle-step / diffraction correction, and driver
+          merging/summation.</strong> That's the crossover-simulator's job; REWMitch is the measurement
+          front-end that feeds it. <em>Ref: VituixCAD (kimmosaunisto.net); Keele, "Low-Frequency
+          Loudspeaker Assessment by Nearfield Sound-Pressure Measurement", JAES 1974.</em></li>
+        <li><strong>Impedance &amp; Thiele–Small parameters.</strong> That's an electrical measurement
+          (sense resistor + current sensing), out of scope for an acoustic-only tool. <em>Ref: REW
+          impedance measurement; miniDSP DATS.</em></li>
+        <li><strong>Bluetooth output.</strong> A2DP re-encodes through a lossy codec that bakes in its
+          own EQ and time smear which can't be separated from the speaker. Wired only. <em>Ref: REW
+          Help — measurement setup.</em></li>
+        <li><strong>Spatial / moving-mic averaging (MMM).</strong> Single fixed-position captures only,
+          to keep timing/phase meaningful. <em>Ref: REW Help — MMM.</em></li>
+        <li><strong>Soundcard / output (DAC) calibration file.</strong> Only the mic is calibratable. A
+          competent USB DAC is essentially flat and, being identical in every capture, cancels in all
+          relative/A-B/timing results — so it only affects the absolute magnitude shape we don't claim.
+          On the shortlist as a "nice to have." <em>Ref: REW Help — soundcard calibration.</em></li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h2>References</h2>
+      <ul class="help refs">
+        <li>A. Farina, "Simultaneous Measurement of Impulse Response and Distortion with a Swept-Sine
+          Technique," 108th AES Convention, 2000.</li>
+        <li>S. Müller &amp; P. Massarani, "Transfer-Function Measurement with Sweeps," J. Audio Eng.
+          Soc., 49(6), 2001.</li>
+        <li>A. Novak, P. Lotton, L. Simon, "Synchronized Swept-Sine: Theory, Application, and
+          Implementation," J. Audio Eng. Soc., 63(10), 2015.</li>
+        <li>F. J. Harris, "On the Use of Windows for Harmonic Analysis with the Discrete Fourier
+          Transform," Proceedings of the IEEE, 66(1), 1978. (window functions)</li>
+        <li>AVNirvana forum — REW measurement technique discussion (avnirvana.com).</li>
+        <li>D. B. Keele Jr., "Low-Frequency Loudspeaker Assessment by Nearfield Sound-Pressure
+          Measurement," J. Audio Eng. Soc., 22(3), 1974.</li>
+        <li>Room EQ Wizard (REW) Help &amp; documentation — roomeqwizard.com.</li>
+        <li>VituixCAD, Kimmo Saunisto — kimmosaunisto.net (measurement &amp; crossover simulation).</li>
+        <li>miniDSP UMIK-1 &amp; DATS — minidsp.com.</li>
+      </ul>
+      <p class="hint">Something look wrong, or a filter you'd expect that's missing? That's exactly the
+        feedback we want — note the section above and we'll address it here with a reference.</p>
+    </div>
+  </section>
+
+  <footer><span id="secureWarn"></span></footer>
+
+  <script type="module" src="app.js"></script>
+  <script type="module" src="wizard.js"></script>
 </body>
 </html>
