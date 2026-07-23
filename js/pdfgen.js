@@ -105,6 +105,7 @@
       });
     });
     chain = chain.then(function () {
+      if (model.instructions) String(model.instructions).split(/\n+/).forEach(function (para) { if (para.trim()) blocks.push({ t: 'p', text: para.trim() }); });
       blocks.push({ t: 'h2', text: 'Sign-off' });
       var sc = Promise.resolve();
       (model.signatures || []).forEach(function (s) {

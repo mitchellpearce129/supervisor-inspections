@@ -157,6 +157,7 @@
 
     // Signatures.
     chain = chain.then(function () {
+      if (model.instructions) String(model.instructions).split(/\n+/).forEach(function (para) { if (para.trim()) bodyParts.push('<text:p>' + esc(para.trim()) + '</text:p>'); });
       bodyParts.push('<text:h text:outline-level="2">Sign-off</text:h>');
       var sc = Promise.resolve();
       (model.signatures || []).forEach(function (s) {

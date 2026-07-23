@@ -241,3 +241,7 @@ pre.raw-out, .raw pre {
 .defect-cat { font-size: 13px; color: var(--brand); font-weight: 600; }
 .defect-actions { display: flex; gap: 16px; margin-top: 8px; }
 .fld { width: 100%; min-height: var(--tap); font: inherit; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); color: var(--ink); }
+
+/* ---- inspection instructions (shown above the signature pane) ------------- */
+.instructions-card { background: color-mix(in srgb, var(--brand) 6%, var(--card)); border-color: color-mix(in srgb, var(--brand) 30%, var(--line)); }
+.instructions-text { white-space: pre-wrap; font-size: 14px; line-height: 1.45; color: var(--ink); }

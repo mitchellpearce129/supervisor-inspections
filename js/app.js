@@ -440,7 +440,7 @@
       if (pendingRecs && pendingRecs.length) {
         wrap.appendChild(el('h3', { class: 'cat-head', text: 'Waiting to upload' }));
         pendingRecs.forEach(function (r) {
-          var left = r.items.filter(function (x) { return !x.done; }).length;
+          var left = r.items.filter(function (x) { return !x.done; }).length + (r.defects ? r.defects.filter(function (x) { return !x.done; }).length : 0);
           wrap.appendChild(el('button', { class: 'job-card', onClick: function () { CommitScreen(r, function () { ContractInspectionsScreen(job); }); } }, [
             el('div', { class: 'job-top' }, [el('span', { class: 'job-no', text: r.name }), el('span', { class: 'up-badge', text: '⬆ ' + left + ' left' })]),
             el('div', { class: 'job-client', text: 'Tap to upload' })
@@ -1059,6 +1059,7 @@
     return {
       title: config.name,
       logo: sig.logo || null,
+      instructions: (config.instructions && config.instructions.trim()) ? config.instructions.trim() : null,
       locationMap: sig.locationMap || null,
       defects: (sig.defects && sig.defects.length) ? sig.defects : null,
       defectSchedule: defectSchedule,
@@ -1127,6 +1128,9 @@
     mount(el('div', { class: 'screen screen-finalise' }, [
       topBar('Finalise', { onBack: function () { if (isPciConfig(config)) DefectScreen(job, config, capture); else ReviewScreen(job, config, capture); } }),
       el('p', { class: 'subtle', text: config.name + ' · ' + job.contractNumber }),
+      (config.instructions && config.instructions.trim()) ? el('div', { class: 'card instructions-card' }, [
+        el('div', { class: 'instructions-text', text: config.instructions })
+      ]) : null,
       el('div', { class: 'card' }, [
         el('h3', { text: 'Supervisor sign-off' }),
         el('label', { class: 'field-label', text: 'Name' }), supName,
@@ -1161,13 +1165,8 @@
       return parts.join(' | ');
     }
     if (isPciConfig(config)) {
-      (capture.defects || []).forEach(function (d, di) {
-        (d.photos || []).forEach(function (p) {
-          var parts = [(d.area || 'Area') + ' - ' + (d.category || 'Defect')];
-          if (d.comment && d.comment.trim()) parts.push(d.comment.trim());
-          items.push({ key: 'd' + di + '_' + p.seq, type: 'Photo', blob: p.blob, filename: p.name, title: p.label, description: photoDesc(parts, p), categoryId: CFG.docCategories.inspectionPhotos });
-        });
-      });
+      // PCI: photos attach to the created Issues (see buildDefectIssues), NOT the
+      // contract. Only the report PDF+ODT upload to the contract here.
     } else {
       config.questions.slice().sort(byOrder).forEach(function (q) {
         var a = capture.answers[q.id] || {};
@@ -1179,13 +1178,31 @@
     return items;
   }
 
+  // PCI issue-creation work list (created at finalise; each defect -> one ClickHome
+  // Issue with its photos attached to the issue). Photo descriptions carry geo/Maps.
+  function buildDefectIssues(job, config, capture) {
+    return (capture.defects || []).map(function (d, di) {
+      return {
+        key: 'issue' + di, area: d.area, areaId: d.areaId, category: d.category, categoryId: d.categoryId,
+        comment: d.comment || '', description: 'Resolve ' + (d.category || 'defect') + ' in ' + (d.area || 'area'),
+        done: false, issueId: null,
+        photos: (d.photos || []).map(function (p) {
+          var parts = [];
+          if (p.when) parts.push('Taken ' + p.when);
+          if (p.geo) parts.push('Location ' + p.geo.lat.toFixed(6) + ', ' + p.geo.lon.toFixed(6) + ' (±' + Math.round(p.geo.acc) + 'm) ' + mapsLink(p.geo));
+          return { blob: p.blob, filename: p.name, title: p.label, description: parts.join(' | '), done: false, idFile: null };
+        })
+      };
+    });
+  }
+
   // A finalised inspection persisted for upload (survives reload/offline).
   function buildPendingRecord(job, config, capture, docs) {
     var items = buildUploadItems(job, config, capture, docs).map(function (it) {
       return { key: it.key, type: it.type, blob: it.blob, filename: it.filename, title: it.title, description: it.description, categoryId: it.categoryId, done: false, idFile: null };
     });
     var inst = capture.inst || {};
-    return {
+    var rec = {
       id: draftIdFor(job, config.inspTemplateId),
       masterContractId: job.masterContractId, contractId: job.contractId,
       contractNumber: job.contractNumber, address: job.address,
@@ -1193,6 +1210,9 @@
       inspRequiredId: inst.inspRequiredId || null, taskId: inst.taskId || null,
       createdAt: Date.now(), complete: false, items: items
     };
+    // PCI: also create a ClickHome Issue per defect (photos attach to the issue).
+    if (isPciConfig(config)) rec.defects = buildDefectIssues(job, config, capture);
+    return rec;
   }
 
   async function uploadWithRetry(contractId, item, attempts) {
@@ -1218,12 +1238,47 @@
       if (r.ok) { it.done = true; it.idFile = r.idFile || null; if (window.CHStore && CHStore.available) await CHStore.pendingPut(rec).catch(function () {}); if (onItem) onItem(it, 'ok'); }
       else { if (onItem) onItem(it, 'fail'); }
     }
-    if (rec.items.every(function (x) { return x.done; })) {
+    // PCI: create an Issue per defect (supervisor token) + attach its photos to
+    // the issue. Idempotent — a stored issueId/photo.done is never redone on retry.
+    async function persist() { if (window.CHStore && CHStore.available) await CHStore.pendingPut(rec).catch(function () {}); }
+    if (rec.defects) {
+      for (var j = 0; j < rec.defects.length; j++) {
+        var df = rec.defects[j];
+        if (df.done) { if (onItem) onItem(df, 'done'); continue; }
+        if (onItem) onItem(df, 'going');
+        if (!df.issueId) {
+          try {
+            var cr = await api.createIssue({ contractId: rec.contractId, masterAreaId: df.areaId, issueCategoryId: df.categoryId, body: df.comment, description: df.description });
+            df.issueId = cr.issueId; await persist();
+          } catch (e) {
+            if (e.name === 'AuthError') { if (onItem) onItem(df, 'auth'); return 'auth'; }
+            if (onItem) onItem(df, 'fail'); continue;
+          }
+        }
+        var photosOk = true;
+        for (var k = 0; k < df.photos.length; k++) {
+          var ph = df.photos[k];
+          if (ph.done) continue;
+          try {
+            var pr = await api.addFileToIssue(df.issueId, { blob: ph.blob, filename: ph.filename, title: ph.title, description: ph.description, categoryId: (CFG.docCategories && CFG.docCategories.inspectionPhotos) || 9, keyWords: 'PCI' });
+            ph.done = true; ph.idFile = pr.idFile || null; await persist();
+          } catch (e) {
+            if (e.name === 'AuthError') { if (onItem) onItem(df, 'auth'); return 'auth'; }
+            photosOk = false;
+          }
+        }
+        if (photosOk && df.photos.every(function (x) { return x.done; })) { df.done = true; await persist(); if (onItem) onItem(df, 'ok'); }
+        else if (onItem) onItem(df, 'fail');
+      }
+    }
+    var itemsDone = rec.items.every(function (x) { return x.done; });
+    var defectsDone = !rec.defects || rec.defects.every(function (x) { return x.done; });
+    if (itemsDone && defectsDone) {
       rec.complete = true;
       if (window.CHStore && CHStore.available) { await CHStore.pendingDelete(rec.id).catch(function () {}); await CHStore.deleteDraft(rec.id).catch(function () {}); }
       return 'complete';
     }
-    if (window.CHStore && CHStore.available) await CHStore.pendingPut(rec).catch(function () {});
+    await persist();
     return 'partial';
   }
 
@@ -1235,28 +1290,36 @@
       rowEls[it.key] = status;
       listEl.appendChild(el('div', { class: 'up-row' }, [el('span', { class: 'up-name', text: (it.type.indexOf('Photo') === 0 ? '📷 ' : '📄 ') + it.title }), status]));
     });
+    (rec.defects || []).forEach(function (df) {
+      var np = df.photos ? df.photos.length : 0;
+      var status = el('span', { class: 'up-status' + (df.done ? ' up-ok' : ''), text: df.done ? '✓ issue raised' : 'queued' });
+      rowEls[df.key] = status;
+      listEl.appendChild(el('div', { class: 'up-row' }, [el('span', { class: 'up-name', text: '⚠ ' + (df.area || 'Area') + ' — ' + (df.category || 'Defect') + ' (' + np + ' photo' + (np === 1 ? '' : 's') + ')' }), status]));
+    });
     var summary = el('div', { class: 'subtle' });
     var actionBtn = el('button', { class: 'btn btn-primary', text: 'Upload to ClickHome' });
     function paint(it, st) {
       var s = rowEls[it.key]; if (!s) return;
-      if (st === 'going') { s.textContent = 'uploading…'; s.className = 'up-status up-going'; }
-      else if (st === 'ok' || st === 'done') { s.textContent = '✓ uploaded' + (it.idFile ? ' (fileId ' + it.idFile + ')' : ''); s.className = 'up-status up-ok'; }
+      var isIssue = !!it.photos && it.area !== undefined;   // defect rows carry photos[] + area
+      if (st === 'going') { s.textContent = isIssue ? (it.issueId ? 'attaching photos…' : 'raising issue…') : 'uploading…'; s.className = 'up-status up-going'; }
+      else if (st === 'ok' || st === 'done') { s.textContent = isIssue ? ('✓ issue' + (it.issueId ? ' ' + it.issueId : '') + ' raised') : ('✓ uploaded' + (it.idFile ? ' (fileId ' + it.idFile + ')' : '')); s.className = 'up-status up-ok'; }
       else if (st === 'fail') { s.textContent = '✗ failed'; s.className = 'up-status up-fail'; }
       else if (st === 'auth') { s.textContent = 'session expired'; s.className = 'up-status up-fail'; }
     }
     async function run() {
       actionBtn.disabled = true; actionBtn.textContent = 'Uploading…'; summary.textContent = '';
       var res = await drainRecord(rec, paint);
-      if (res === 'complete') { summary.textContent = '✓ All files uploaded — cleared from this device.'; actionBtn.style.display = 'none'; }
+      if (res === 'complete') { summary.textContent = '✓ Done — documents on the job' + (rec.defects && rec.defects.length ? ' and ' + rec.defects.length + ' issue(s) raised' : '') + '. Cleared from this device.'; actionBtn.style.display = 'none'; }
       else if (res === 'auth') { summary.textContent = 'Session expired — sign in again, then Retry. Nothing was lost.'; actionBtn.disabled = false; actionBtn.textContent = 'Retry'; }
-      else { summary.textContent = 'Some files still pending (likely connectivity). Saved on this device — Retry when back online.'; actionBtn.disabled = false; actionBtn.textContent = 'Retry failed'; }
+      else { summary.textContent = 'Some items still pending (likely connectivity). Saved on this device — Retry when back online.'; actionBtn.disabled = false; actionBtn.textContent = 'Retry failed'; }
     }
     actionBtn.addEventListener('click', run);
+    var count = rec.items.length + (rec.defects ? rec.defects.length : 0);
     mount(el('div', { class: 'screen' }, [
       topBar('Upload', { onBack: backFn || function () { JobListScreen(); } }),
-      el('p', { class: 'subtle', text: rec.name + ' · ' + rec.contractNumber + ' · ' + rec.items.length + ' file(s)' }),
+      el('p', { class: 'subtle', text: rec.name + ' · ' + rec.contractNumber + ' · ' + count + ' item(s)' }),
       listEl, actionBtn, summary,
-      el('p', { class: 'muted', text: 'Files stay on this device until each upload is confirmed — nothing is lost if the connection drops.' })
+      el('p', { class: 'muted', text: 'Items stay on this device until each is confirmed — documents upload to the job, issues are raised in ClickHome. Nothing is lost if the connection drops.' })
     ]));
   }
 
@@ -1271,7 +1334,7 @@
       if (!recs.length) { wrap.appendChild(el('p', { class: 'muted', text: 'No inspections waiting to upload.' })); retryBtn.style.display = 'none'; return; }
       retryBtn.style.display = '';
       recs.forEach(function (r) {
-        var left = r.items.filter(function (x) { return !x.done; }).length;
+        var left = r.items.filter(function (x) { return !x.done; }).length + (r.defects ? r.defects.filter(function (x) { return !x.done; }).length : 0);
         wrap.appendChild(el('button', { class: 'job-card', onClick: function () { CommitScreen(r, PendingScreen); } }, [
           el('div', { class: 'job-top' }, [el('span', { class: 'job-no', text: r.name }), el('span', { class: 'up-badge', text: '⬆ ' + left + ' left' })]),
           el('div', { class: 'job-client', text: r.contractNumber + ' · ' + (r.address || '') })

@@ -351,12 +351,12 @@
    *   fields: description, documentCategoryId, title, fileData (binary)
    * Do NOT set Content-Type — the browser adds the multipart boundary.
    */
-  async function addFile(contractId, opts) {
+  // Shared multipart upload. `url` is the AddFile route (Contracts or Issues).
+  async function _addFile(url, opts) {
     if (!state.token) throw new AuthError('Not signed in.');
-    // Category id: the upload item carries it as `categoryId` (documentCategoryId
-    // is the older name — accept either). ClickHome's AddFile does int.Parse() on
-    // this field, so a non-numeric value (undefined/null/'') yields a cryptic
-    // 500 "Input string was not in a correct format." Validate up front instead.
+    // Category id: item carries it as `categoryId` (documentCategoryId is the older
+    // name — accept either). ClickHome AddFile does int.Parse() on it, so a
+    // non-numeric value yields a cryptic 500. Validate up front.
     var catId = opts.categoryId != null ? opts.categoryId : opts.documentCategoryId;
     var catNum = Number(catId);
     if (!Number.isInteger(catNum) || catNum <= 0) {
@@ -365,13 +365,12 @@
     var fd = new FormData();
     fd.append('description', opts.description || '');
     fd.append('documentCategoryId', String(catNum));
+    if (opts.keyWords) fd.append('keyWords', opts.keyWords);
     fd.append('title', opts.title || '');
     fd.append('fileData', opts.blob, opts.filename);
     var res;
     try {
-      res = await fetch(CFG.apiBase + '/V2/Contracts/' + contractId + '/AddFile', {
-        method: 'POST', headers: authHeaders(), body: fd
-      });
+      res = await fetch(CFG.apiBase + url, { method: 'POST', headers: authHeaders(), body: fd });
     } catch (e) {
       throw new ApiError('Network error uploading ' + (opts.filename || 'file'), 0);
     }
@@ -380,6 +379,31 @@
     var body = null; try { body = await res.json(); } catch (e) { /* some deployments return no body */ }
     var idFile = body && (body.fileId || body.idFile || body.id || (body.file && (body.file.fileId || body.file.idFile)));
     return { idFile: idFile, body: body };
+  }
+  // Upload a file to a job (child contract), as the supervisor (canAddDocs).
+  function addFile(contractId, opts) { return _addFile('/V2/Contracts/' + contractId + '/AddFile', opts); }
+  // Attach a file to an Issue (photos go on the issue, not the contract).
+  function addFileToIssue(issueId, opts) { return _addFile('/V2/Issues/' + issueId + '/AddFile', opts); }
+
+  // Create a ClickHome Issue, raised as the current (supervisor) user. Returns { issueId, body }.
+  // resourceCodeId defaults to 0 ("All Resource Codes" — the catch-all, so any category is valid).
+  async function createIssue(f) {
+    var d = await post('/V2/Issues', {
+      body: f.body || '',
+      contract: { contractId: f.contractId },
+      dateRaised: new Date().toISOString(),
+      description: f.description || '',
+      issueCategory: { issueCategoryId: f.issueCategoryId },
+      issueId: null,
+      issueType: f.issueType || 'M',
+      masterArea: { masterAreaId: f.masterAreaId },
+      resourceCode: { resourceCodeId: f.resourceCodeId != null ? f.resourceCodeId : 0 },
+      severity: f.severity != null ? f.severity : 2,
+      urgency: f.urgency != null ? f.urgency : 10
+    });
+    var issueId = d && (d.issueId || d.id || (d.issue && d.issue.issueId));
+    if (!issueId) throw new ApiError('Issue create returned no issueId.', 0);
+    return { issueId: issueId, body: d };
   }
 
   // ---- PCI reference lists (master areas + issue categories) ---------------
@@ -439,6 +463,8 @@
     getInspTemplateConfig: getInspTemplateConfig,
     getContractInspections: getContractInspections,
     addFile: addFile,
+    addFileToIssue: addFileToIssue,
+    createIssue: createIssue,
     listAllInspTemplates: listAllInspTemplates,
     bulkCacheAllTemplates: bulkCacheAllTemplates,
     refreshDocCategories: refreshDocCategories,
