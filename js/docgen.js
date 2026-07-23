@@ -125,6 +125,23 @@
         });
       });
     }
+    // PCI defect schedule (grouped by area).
+    if (model.defectSchedule) {
+      model.defectSchedule.forEach(function (grp) {
+        chain = chain.then(function () {
+          bodyParts.push('<text:h text:outline-level="2">' + esc(grp.area) + '</text:h>');
+          var pc = Promise.resolve();
+          grp.defects.forEach(function (d) {
+            pc = pc.then(function () {
+              bodyParts.push('<text:p>Issue: ' + esc(d.category || '-') + '</text:p>');
+              if (d.comment) bodyParts.push('<text:p>Comment: ' + esc(d.comment) + '</text:p>');
+            });
+            (d.photos || []).forEach(function (ph) { pc = pc.then(function () { return frame(ph, 8, 4, 3); }).then(function (fr) { bodyParts.push(fr); }); });
+          });
+          return pc;
+        });
+      });
+    }
     (model.questions || []).forEach(function (q, qi) {
       chain = chain.then(function () {
         bodyParts.push('<text:h text:outline-level="2">' + esc((qi + 1) + '. ' + q.text) + '</text:h>');

@@ -232,3 +232,12 @@ pre.raw-out, .raw pre {
 }
 .raw { margin-top: 18px; }
 .raw summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+
+/* ---- PCI defect logging --------------------------------------------------- */
+.defect-list { display: flex; flex-direction: column; gap: 10px; margin: 6px 0 12px; }
+.defect-row { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; }
+.defect-hd { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.defect-area { font-weight: 700; }
+.defect-cat { font-size: 13px; color: var(--brand); font-weight: 600; }
+.defect-actions { display: flex; gap: 16px; margin-top: 8px; }
+.fld { width: 100%; min-height: var(--tap); font: inherit; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); color: var(--ink); }

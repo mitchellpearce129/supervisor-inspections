@@ -76,9 +76,13 @@
       2: { label: 'From Zero To Thousand', kind: 'number', min: 0, max: 1000 },
       3: { label: 'Custom', kind: 'text' },
       4: { label: 'Yes 1 No 0 NA 2', kind: 'choice', options: [{ label: 'Yes', value: 1 }, { label: 'No', value: 0 }, { label: 'NA', value: 2 }] },
-      6: { label: 'PCI Phase 1', kind: 'unsupported' },
-      7: { label: 'PCI Phase 2', kind: 'unsupported' },
-      8: { label: 'Statutory', kind: 'unsupported' }
+      // 6/7/8 are the area-based PCI types. The app does NOT reproduce the
+      // question x area matrix — inspections whose items are any of these switch
+      // to the free-form DEFECT-LOGGING capture mode (area + issue category +
+      // comment + photo). See app.js isPciConfig()/DefectScreen.
+      6: { label: 'PCI Phase 1', kind: 'pci' },
+      7: { label: 'PCI Phase 2', kind: 'pci' },
+      8: { label: 'Statutory', kind: 'pci' }
     },
 
     // Inspection types that get a GPS "location map + defect list" section at

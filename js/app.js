@@ -299,9 +299,10 @@
       syncStatus.textContent = 'Syncing…';
       try {
         try { await api.refreshDocCategories(); } catch (e) { /* non-fatal — keep cached/config ids */ }
+        try { await api.refreshPciLists(); } catch (e) { /* non-fatal — keep cached/seed PCI lists */ }
         var r = await api.bulkCacheAllTemplates(function (done, total) { syncStatus.textContent = 'Syncing templates… ' + done + '/' + total; });
         templatesSyncedThisSession = true;
-        syncStatus.textContent = '✓ ' + r.cached + '/' + r.total + ' templates + doc categories cached for offline';
+        syncStatus.textContent = '✓ ' + r.cached + '/' + r.total + ' templates + doc categories + PCI lists cached for offline';
       } catch (e) { syncStatus.textContent = manual ? ('Sync failed: ' + (e.message || e)) : ''; }
     }
 
@@ -398,7 +399,7 @@
   function draftIdFor(job, inspTemplateId) { return job.masterContractId + ':' + inspTemplateId; }
   function serializeDraft(draftId, job, config, capture) {
     var answers = {};
-    Object.keys(capture.answers).forEach(function (qid) {
+    Object.keys(capture.answers || {}).forEach(function (qid) {
       var a = capture.answers[qid];
       answers[qid] = {
         value: a.value, comment: a.comment || '', nextSeq: a.nextSeq || 1,
@@ -406,7 +407,12 @@
         photos: (a.photos || []).map(function (p) { return { seq: p.seq, label: p.label, name: p.name, source: p.source, blob: p.blob, geo: p.geo || null, when: p.when || null }; })
       };
     });
-    return { draftId: draftId, masterContractId: job.masterContractId, contractNumber: job.contractNumber, address: job.address, inspTemplateId: config.inspTemplateId, name: config.name, inst: capture.inst || null, updatedAt: Date.now(), answers: answers };
+    // PCI defect-logging captures store `defects` instead of `answers`.
+    var defects = (capture.defects || []).map(function (d) {
+      return { id: d.id, areaId: d.areaId, area: d.area, categoryId: d.categoryId, category: d.category, comment: d.comment || '', nextSeq: d.nextSeq || 1,
+        photos: (d.photos || []).map(function (p) { return { seq: p.seq, label: p.label, name: p.name, source: p.source, blob: p.blob, geo: p.geo || null, when: p.when || null }; }) };
+    });
+    return { draftId: draftId, masterContractId: job.masterContractId, contractNumber: job.contractNumber, address: job.address, inspTemplateId: config.inspTemplateId, name: config.name, inst: capture.inst || null, updatedAt: Date.now(), answers: answers, defects: defects };
   }
   function rehydrateDraft(draft) {
     var capture = { answers: {}, _resumedAt: draft.updatedAt, inst: draft.inst || null };
@@ -417,6 +423,12 @@
         photos: (a.photos || []).map(function (p) { return { seq: p.seq, label: p.label, name: p.name, source: p.source, blob: p.blob, url: URL.createObjectURL(p.blob), geo: p.geo || null, when: p.when || null }; })
       };
     });
+    if (draft.defects && draft.defects.length) {
+      capture.defects = draft.defects.map(function (d) {
+        return { id: d.id, areaId: d.areaId, area: d.area, categoryId: d.categoryId, category: d.category, comment: d.comment || '', nextSeq: d.nextSeq || ((d.photos ? d.photos.length : 0) + 1),
+          photos: (d.photos || []).map(function (p) { return { seq: p.seq, label: p.label, name: p.name, source: p.source, blob: p.blob, url: URL.createObjectURL(p.blob), geo: p.geo || null, when: p.when || null }; }) };
+      });
+    }
     return capture;
   }
 
@@ -506,6 +518,9 @@
 
   function byOrder(a, b) { return (a.order || 0) - (b.order || 0); }
   function rtOf(q) { return CFG.responseTypes[q.responseType] || { kind: 'unsupported', label: 'Type ' + q.responseType }; }
+  // PCI = any item is an area-based type (6/7/8). These use the free-form
+  // defect-logging capture mode instead of the flat question list.
+  function isPciConfig(config) { return (config.questions || []).some(function (q) { return rtOf(q).kind === 'pci'; }); }
   function valueLabel(rt, value) {
     if (value == null || value === '') return 'Not answered';
     if (rt.kind === 'choice') { var o = (rt.options || []).filter(function (x) { return Number(x.value) === Number(value); })[0]; return o ? o.label : String(value); }
@@ -514,6 +529,7 @@
 
   // ---- Capture -------------------------------------------------------------
   function CaptureScreen(job, config, existing, inst) {
+    if (isPciConfig(config)) return DefectScreen(job, config, existing, inst);   // area-based PCI -> defect logging
     var capture = existing || { answers: {} };
     if (inst && !capture.inst) capture.inst = inst;   // {inspRequiredId, taskId} — for close-out linking
     config.questions.forEach(function (q) { if (!capture.answers[q.id]) capture.answers[q.id] = { value: null, comment: '', photos: [], nextSeq: 1 }; });
@@ -600,6 +616,162 @@
     refresh();
     startCamera(video, camStatus);
     startGeo();
+  }
+
+  // ---- PCI defect logging (area-based inspections; response types 6/7/8) ---
+  // Free-form: a list of defects, each tagged with an Area + Issue Category +
+  // comment + photo(s). No question x area matrix, no tblInspResults writes.
+  function DefectScreen(job, config, existing, inst) {
+    var capture = existing || {};
+    if (!capture.defects) capture.defects = [];
+    if (inst && !capture.inst) capture.inst = inst;
+    var draftId = draftIdFor(job, config.inspTemplateId);
+    var canPersist = !!(window.CHStore && CHStore.available);
+
+    function saveDraft() {
+      if (!canPersist) return;
+      if (capture.defects.length) CHStore.putDraft(serializeDraft(draftId, job, config, capture)).catch(function () {});
+    }
+
+    var listWrap = el('div', { class: 'defect-list' });
+    var finBtn = el('button', { class: 'btn btn-primary', text: 'Finalise →', onClick: function () { FinaliseScreen(job, config, capture); } });
+    function updateFin() { if (capture.defects.length) finBtn.removeAttribute('disabled'); else finBtn.setAttribute('disabled', 'disabled'); }
+
+    function renderList() {
+      clear(listWrap);
+      if (!capture.defects.length) listWrap.appendChild(el('p', { class: 'muted', text: 'No defects logged yet. Tap “+ Add defect”.' }));
+      capture.defects.forEach(function (d, i) {
+        listWrap.appendChild(el('div', { class: 'defect-row' }, [
+          el('div', { class: 'defect-hd' }, [ el('span', { class: 'defect-area', text: d.area || '(no area)' }), el('span', { class: 'defect-cat', text: d.category || '(no category)' }) ]),
+          (d.comment && d.comment.trim()) ? el('div', { class: 'subtle', text: d.comment }) : null,
+          (d.photos && d.photos.length) ? el('div', { class: 'thumbs' }, d.photos.map(function (p) { return el('img', { class: 'thumb-sm', src: p.url, alt: p.name }); })) : null,
+          el('div', { class: 'defect-actions' }, [
+            el('button', { class: 'btn-lib', text: 'Edit', onClick: function () { DefectForm(job, config, capture, d, i); } }),
+            el('button', { class: 'btn-lib', text: 'Remove', onClick: function () {
+              (d.photos || []).forEach(function (p) { URL.revokeObjectURL(p.url); });
+              capture.defects.splice(i, 1); saveDraft(); renderList(); updateFin();
+            } })
+          ])
+        ]));
+      });
+    }
+    renderList(); updateFin();
+
+    mount(el('div', { class: 'screen screen-defects' }, [
+      topBar(config.name, { onBack: function () { ContractInspectionsScreen(job); } }),
+      el('p', { class: 'subtle', text: job.contractNumber + ' · ' + (job.address || '') }),
+      el('p', { class: 'muted', text: 'Log each defect against a room/area and issue type, with a photo. ' + capture.defects.length + ' logged.' }),
+      listWrap,
+      el('div', { class: 'capture-foot' }, [
+        el('button', { class: 'btn btn-capture', text: '+ Add defect', onClick: function () { DefectForm(job, config, capture, null, -1); } }),
+        finBtn
+      ])
+    ]));
+  }
+
+  // Add / edit a single defect. Hosts the live camera so photos can be snapped
+  // here (with the same GPS/time stamp + mark-up as the standard capture).
+  function DefectForm(job, config, capture, existingDefect, idx) {
+    var isNew = !existingDefect;
+    var d = existingDefect || { id: 'd' + Date.now(), areaId: null, area: '', categoryId: null, category: '', comment: '', photos: [], nextSeq: 1 };
+    var jobType = String(job.jobType || 'C').toUpperCase();
+    var back = function () { DefectScreen(job, config, capture); };
+
+    // live camera + geo (own inset, torn down on nav by mount())
+    var video = el('video', { autoplay: '', playsinline: '' }); video.muted = true;
+    var camStatus = el('div', { class: 'cam-status', text: 'Starting camera…' });
+    var pip = el('div', { class: 'cam-pip' }, [video, camStatus]);
+    var canvas = document.createElement('canvas');
+    function grabFrame() {
+      if (!video.videoWidth) return Promise.resolve(null);
+      canvas.width = video.videoWidth; canvas.height = video.videoHeight;
+      canvas.getContext('2d').drawImage(video, 0, 0);
+      var now = new Date(), when = stampTime(now) + ' ' + tzAbbrev(now);
+      var geo = lastFix ? { lat: lastFix.lat, lon: lastFix.lon, acc: lastFix.acc } : null;
+      burnStamp(canvas, when, geo);
+      return new Promise(function (res) { canvas.toBlob(function (b) { res(b ? { blob: b, url: URL.createObjectURL(b), geo: geo, when: when } : null); }, 'image/jpeg', 0.85); });
+    }
+
+    // Area picker (grouped by room group) + Category picker (filtered by job type)
+    var lists = { masterAreas: [], issueCategories: [] };
+    var areaSel = document.createElement('select'); areaSel.className = 'fld';
+    var catSel = document.createElement('select'); catSel.className = 'fld';
+    function fillPickers() {
+      areaSel.innerHTML = ''; catSel.innerHTML = '';
+      areaSel.appendChild(new Option('— Select area —', ''));
+      var groups = {};
+      (lists.masterAreas || []).forEach(function (a) { (groups[a.group || 'Other'] = groups[a.group || 'Other'] || []).push(a); });
+      Object.keys(groups).sort().forEach(function (g) {
+        var og = document.createElement('optgroup'); og.label = g;
+        groups[g].forEach(function (a) { var o = new Option(a.name, String(a.id)); og.appendChild(o); });
+        areaSel.appendChild(og);
+      });
+      if (d.areaId != null) areaSel.value = String(d.areaId);
+      catSel.appendChild(new Option('— Select issue category —', ''));
+      (lists.issueCategories || []).filter(function (c) { return !c.jobType || c.jobType.toUpperCase() === jobType; })
+        .forEach(function (c) { catSel.appendChild(new Option(c.name, String(c.id))); });
+      if (d.categoryId != null) catSel.value = String(d.categoryId);
+    }
+    areaSel.addEventListener('change', function () { d.areaId = areaSel.value ? Number(areaSel.value) : null; d.area = areaSel.options[areaSel.selectedIndex] ? areaSel.options[areaSel.selectedIndex].text : ''; });
+    catSel.addEventListener('change', function () { d.categoryId = catSel.value ? Number(catSel.value) : null; d.category = catSel.options[catSel.selectedIndex] ? catSel.options[catSel.selectedIndex].text : ''; });
+
+    var commentTa = el('textarea', { class: 'comment-ta', rows: '3', placeholder: 'Describe the defect' });
+    commentTa.value = d.comment || '';
+    commentTa.addEventListener('input', function () { d.comment = commentTa.value; });
+
+    // photos
+    var thumbs = el('div', { class: 'thumbs' });
+    var fileInput = el('input', { type: 'file', accept: 'image/*', multiple: true }); fileInput.style.display = 'none';
+    fileInput.addEventListener('change', function () { Array.prototype.forEach.call(fileInput.files, function (f) { addPhoto(f, URL.createObjectURL(f), 'library', null); }); fileInput.value = ''; });
+    function addPhoto(blob, url, source, meta) {
+      var seq = d.nextSeq || (d.photos.length + 1); d.nextSeq = seq + 1;
+      var label = job.contractNumber + ' - ' + (d.area || 'Area') + ' - ' + (d.category || 'Defect') + ' (' + seq + ')';
+      d.photos.push({ blob: blob, url: url, source: source, seq: seq, label: label, name: sanitizeName(label) + '.jpg', geo: (meta && meta.geo) || null, when: (meta && meta.when) || null });
+      renderThumbs();
+    }
+    function renderThumbs() {
+      clear(thumbs);
+      d.photos.forEach(function (p, i) {
+        var image = el('img', { src: p.url, alt: p.label });
+        function edit() { PhotoMarkup(p, function (b, u) { URL.revokeObjectURL(p.url); p.blob = b; p.url = u; image.src = u; }); }
+        image.addEventListener('click', edit);
+        thumbs.appendChild(el('div', { class: 'thumb', title: p.label + ' — tap to mark up' }, [
+          image, el('span', { class: 'seq', text: '(' + p.seq + ')' }),
+          el('button', { class: 'thumb-edit', text: '✎', title: 'Mark up', onClick: edit }),
+          el('button', { class: 'thumb-x', text: '×', onClick: function () { URL.revokeObjectURL(p.url); d.photos.splice(i, 1); renderThumbs(); } })
+        ]));
+      });
+    }
+    renderThumbs();
+
+    var captureBtn = el('button', { class: 'btn btn-capture', text: '📷 Capture', onClick: function () {
+      Promise.resolve(grabFrame()).then(function (f) { if (f) addPhoto(f.blob, f.url, 'camera', { geo: f.geo, when: f.when }); else fileInput.click(); });
+    } });
+    var status = el('div', { class: 'error' });
+    var saveBtn = el('button', { class: 'btn btn-primary', text: isNew ? 'Add defect' : 'Save defect', onClick: function () {
+      if (!d.areaId) { status.textContent = 'Pick an area.'; return; }
+      if (!d.categoryId) { status.textContent = 'Pick an issue category.'; return; }
+      if (isNew) capture.defects.push(d);
+      if (window.CHStore && CHStore.available) CHStore.putDraft(serializeDraft(draftIdFor(job, config.inspTemplateId), job, config, capture)).catch(function () {});
+      back();
+    } });
+
+    mount(el('div', { class: 'screen screen-defect-form' }, [
+      topBar(isNew ? 'Add defect' : 'Edit defect', { onBack: back }),
+      el('p', { class: 'subtle', text: config.name + ' · ' + job.contractNumber }),
+      el('div', { class: 'field' }, [el('label', { class: 'field-label', text: 'Area' }), areaSel]),
+      el('div', { class: 'field' }, [el('label', { class: 'field-label', text: 'Issue category' }), catSel]),
+      el('div', { class: 'field' }, [el('label', { class: 'field-label', text: 'Comment' }), commentTa]),
+      el('div', { class: 'field' }, [el('label', { class: 'field-label', text: 'Photos' }), thumbs, el('div', { class: 'photo-actions' }, [captureBtn, el('button', { class: 'btn-lib', text: 'Library', onClick: function () { fileInput.click(); } })]), fileInput]),
+      status,
+      el('div', { class: 'capture-foot' }, [
+        el('button', { class: 'btn-lib', text: 'Cancel', onClick: back }),
+        saveBtn
+      ]),
+      pip
+    ]));
+    startCamera(video, camStatus); startGeo();
+    api.loadPciLists().then(function (l) { lists = l || lists; fillPickers(); }).catch(function () { fillPickers(); });
   }
 
   function startCamera(video, statusEl) {
@@ -867,10 +1039,21 @@
   }
 
   function buildDocModel(job, config, capture, sig) {
-    var questions = config.questions.slice().sort(byOrder).map(function (q) {
+    var pci = isPciConfig(config);
+    var questions = pci ? [] : config.questions.slice().sort(byOrder).map(function (q) {
       var a = capture.answers[q.id] || {};
       return { text: q.text, answer: valueLabel(rtOf(q), a.value), comment: (a.comment || '').trim(), photos: (a.photos || []).map(function (p) { return p.blob; }) };
     });
+    // PCI: group the logged defects by area into a defect schedule.
+    var defectSchedule = null;
+    if (pci) {
+      var byArea = {};
+      (capture.defects || []).forEach(function (d) {
+        var k = d.area || '(unspecified area)';
+        (byArea[k] = byArea[k] || []).push({ category: d.category || '', comment: (d.comment || '').trim(), photos: (d.photos || []).map(function (p) { return p.blob; }) });
+      });
+      defectSchedule = Object.keys(byArea).sort().map(function (a) { return { area: a, defects: byArea[a] }; });
+    }
     var signatures = [{ label: 'Supervisor', name: sig.supName, blob: sig.supBlob }];
     if (sig.cliBlob) signatures.push({ label: 'Client', name: sig.cliName, blob: sig.cliBlob });
     return {
@@ -878,6 +1061,7 @@
       logo: sig.logo || null,
       locationMap: sig.locationMap || null,
       defects: (sig.defects && sig.defects.length) ? sig.defects : null,
+      defectSchedule: defectSchedule,
       contract: { number: job.contractNumber, address: job.address, client: job.client, stage: job.stage, inspectionType: config.name, supervisor: sig.supName, date: new Date().toISOString().slice(0, 10) },
       questions: questions, signatures: signatures
     };
@@ -941,7 +1125,7 @@
     });
 
     mount(el('div', { class: 'screen screen-finalise' }, [
-      topBar('Finalise', { onBack: function () { ReviewScreen(job, config, capture); } }),
+      topBar('Finalise', { onBack: function () { if (isPciConfig(config)) DefectScreen(job, config, capture); else ReviewScreen(job, config, capture); } }),
       el('p', { class: 'subtle', text: config.name + ' · ' + job.contractNumber }),
       el('div', { class: 'card' }, [
         el('h3', { text: 'Supervisor sign-off' }),
@@ -971,15 +1155,27 @@
       { key: 'pdf', type: 'Report (PDF)', blob: docs.pdf.blob, filename: docs.pdf.filename, title: docs.pdf.filename.replace(/\.pdf$/i, ''), description: 'Inspection: ' + config.name + ' | ' + key, categoryId: CFG.docCategories.inspections },
       { key: 'odt', type: 'Report source (ODT)', blob: docs.odt.blob, filename: docs.odt.filename, title: docs.odt.filename.replace(/\.odt$/i, '') + ' (source)', description: 'Editable source | ' + key, categoryId: CFG.docCategories.inspections }
     ];
-    config.questions.slice().sort(byOrder).forEach(function (q) {
-      var a = capture.answers[q.id] || {};
-      (a.photos || []).forEach(function (p) {
-        var pd = [];
-        if (p.when) pd.push('Taken ' + p.when);
-        if (p.geo) pd.push('Location ' + p.geo.lat.toFixed(6) + ', ' + p.geo.lon.toFixed(6) + ' (±' + Math.round(p.geo.acc) + 'm) ' + mapsLink(p.geo));
-        items.push({ key: 'p' + q.id + '_' + p.seq, type: 'Photo', blob: p.blob, filename: p.name, title: p.label, description: pd.join(' | '), categoryId: CFG.docCategories.inspectionPhotos });
+    function photoDesc(parts, p) {
+      if (p.when) parts.push('Taken ' + p.when);
+      if (p.geo) parts.push('Location ' + p.geo.lat.toFixed(6) + ', ' + p.geo.lon.toFixed(6) + ' (±' + Math.round(p.geo.acc) + 'm) ' + mapsLink(p.geo));
+      return parts.join(' | ');
+    }
+    if (isPciConfig(config)) {
+      (capture.defects || []).forEach(function (d, di) {
+        (d.photos || []).forEach(function (p) {
+          var parts = [(d.area || 'Area') + ' - ' + (d.category || 'Defect')];
+          if (d.comment && d.comment.trim()) parts.push(d.comment.trim());
+          items.push({ key: 'd' + di + '_' + p.seq, type: 'Photo', blob: p.blob, filename: p.name, title: p.label, description: photoDesc(parts, p), categoryId: CFG.docCategories.inspectionPhotos });
+        });
       });
-    });
+    } else {
+      config.questions.slice().sort(byOrder).forEach(function (q) {
+        var a = capture.answers[q.id] || {};
+        (a.photos || []).forEach(function (p) {
+          items.push({ key: 'p' + q.id + '_' + p.seq, type: 'Photo', blob: p.blob, filename: p.name, title: p.label, description: photoDesc([], p), categoryId: CFG.docCategories.inspectionPhotos });
+        });
+      });
+    }
     return items;
   }
 

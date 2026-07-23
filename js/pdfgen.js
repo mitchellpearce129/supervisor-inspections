@@ -77,6 +77,23 @@
         });
       });
     }
+    // PCI defect schedule (grouped by area).
+    if (model.defectSchedule) {
+      model.defectSchedule.forEach(function (grp) {
+        chain = chain.then(function () {
+          blocks.push({ t: 'h2', text: grp.area });
+          var pc = Promise.resolve();
+          grp.defects.forEach(function (d) {
+            pc = pc.then(function () {
+              blocks.push({ t: 'p', text: 'Issue: ' + (d.category || '-') });
+              if (d.comment) blocks.push({ t: 'p', text: 'Comment: ' + d.comment });
+            });
+            (d.photos || []).forEach(function (ph) { pc = pc.then(function () { return regImg(ph, 1000, 750); }).then(function (idx) { blocks.push({ t: 'img', idx: idx, frac: 0.6 }); }); });
+          });
+          return pc;
+        });
+      });
+    }
     (model.questions || []).forEach(function (q, qi) {
       chain = chain.then(function () {
         blocks.push({ t: 'h2', text: (qi + 1) + '. ' + q.text });

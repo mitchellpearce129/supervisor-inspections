@@ -382,6 +382,50 @@
     return { idFile: idFile, body: body };
   }
 
+  // ---- PCI reference lists (master areas + issue categories) ---------------
+  // PCI defect-logging uses two small pick-lists, NOT the question x area matrix.
+  // Cache-first for capture; refreshPciLists() updates from the API at sync time;
+  // bundled data/pci-seed.json is the final fallback. The API endpoints are
+  // best-effort (VERIFY against a live token) — on any failure we keep cache/seed
+  // so the feature keeps working.
+  var PCI_SEED = null;
+  async function pciSeed() {
+    if (PCI_SEED) return PCI_SEED;
+    try { var res = await fetch('data/pci-seed.json', { cache: 'no-store' }); if (res.ok) PCI_SEED = await res.json(); } catch (e) { /* ignore */ }
+    return PCI_SEED || { masterAreas: [], issueCategories: [] };
+  }
+  // Field names differ by source: API returns camelCase (masterAreaId/area/roomGroup,
+  // issueCategoryId/description/jobType); the bundled seed uses id/name/group|jobType;
+  // DB dumps use sg*/id*. Handle all. jobType can come back as a NUL char -> strip it.
+  function firstDef() { for (var i = 0; i < arguments.length; i++) { if (arguments[i] != null) return arguments[i]; } return null; }
+  function txt(s) { return String(s == null ? '' : s).replace(/\u0000/g, '').trim(); }
+  function normArea(r) { return { id: firstDef(r.masterAreaId, r.idMasterArea, r.id), name: txt(r.area || r.sgArea || r.name), group: txt(r.roomGroup || r.sgRoomGroup || r.group) }; }
+  function normCat(r) { return { id: firstDef(r.issueCategoryId, r.idIssueCategory, r.id), name: txt(r.description || r.sgDescription || r.name), jobType: txt(r.cdJobType || r.jobType) }; }
+  function clean(arr, fn) { return (arr || []).map(fn).filter(function (x) { return x.name; }); }
+
+  async function refreshPciLists() {
+    var areas = null, cats = null;
+    var crit = { businessUnitRegions: { businessUnitIds: [0], includeChildBusinessUnits: true } };
+    var sel = { businessUnit: {}, metaData: {}, security: {} };
+    try { var a = await adminReq('POST', '/V2/AdminSetup/MasterAreas/List?name=Area', { criteria: crit, selection: sel, sorting: [], pagination: { take: 500, skip: 0 } }); areas = clean((a && (a.results || a.list)) || [], normArea); } catch (e) { /* offline / no perms — keep cache/seed */ }
+    try { var c = await adminReq('POST', '/V2/AdminSetup/IssueCategories/List?name=IssueCategory', { criteria: crit, selection: sel, sorting: [], pagination: { take: 200, skip: 0 } }); cats = clean((c && (c.results || c.list)) || [], normCat); } catch (e) { /* offline / no perms — keep cache/seed */ }
+    if ((areas && areas.length) || (cats && cats.length)) {
+      var seed = await pciSeed();
+      var out = { masterAreas: (areas && areas.length) ? areas : clean(seed.masterAreas, normArea), issueCategories: (cats && cats.length) ? cats : clean(seed.issueCategories, normCat) };
+      if (window.CHStore && CHStore.available && CFG.systemId) await CHStore.cachePut(CFG.ns('pcilists'), out).catch(function () {});
+      return out;
+    }
+    return loadPciLists();   // API gave nothing — fall back to cache/seed
+  }
+  // Cache-first -> bundled seed. Does NOT hit the API (use refreshPciLists to update).
+  async function loadPciLists() {
+    if (window.CHStore && CHStore.available && CFG.systemId) {
+      try { var c = await CHStore.cacheGet(CFG.ns('pcilists')); if (c && c.data && c.data.masterAreas && c.data.masterAreas.length) return c.data; } catch (e) { /* ignore */ }
+    }
+    var seed = await pciSeed();
+    return { masterAreas: clean(seed.masterAreas, normArea), issueCategories: clean(seed.issueCategories, normCat) };
+  }
+
   window.CHApi = {
     AuthError: AuthError,
     ApiError: ApiError,
@@ -397,6 +441,8 @@
     addFile: addFile,
     listAllInspTemplates: listAllInspTemplates,
     bulkCacheAllTemplates: bulkCacheAllTemplates,
-    refreshDocCategories: refreshDocCategories
+    refreshDocCategories: refreshDocCategories,
+    loadPciLists: loadPciLists,
+    refreshPciLists: refreshPciLists
   };
 })();
