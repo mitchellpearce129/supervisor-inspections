@@ -237,7 +237,7 @@
     var catIds = {}; qs.forEach(function (q) { catIds[q.categoryId] = true; });
     var multi = Object.keys(catIds).length > 1;
     var categories = Object.keys(catIds).map(function (id) { return { id: Number(id), name: multi ? ('Category ' + id) : 'Default' }; });
-    return { inspTemplateId: d.inspTemplateId, name: (d.inspectionGroup || '').trim(), adHoc: !!d.adHoc, inspType: d.inspType, instructions: d.instructions || '', categories: categories, questions: qs };
+    return { inspTemplateId: d.inspTemplateId, name: (d.inspectionGroup || '').trim(), adHoc: !!d.adHoc, inspType: d.inspType, instructions: d.instructions || '', postInspectionAction: (d.postInspectionAction || '').trim(), categories: categories, questions: qs };
   }
 
   /**
@@ -388,19 +388,22 @@
   // Create a ClickHome Issue, raised as the current (supervisor) user. Returns { issueId, body }.
   // resourceCodeId defaults to 0 ("All Resource Codes" — the catch-all, so any category is valid).
   async function createIssue(f) {
-    var d = await post('/V2/Issues', {
+    var payload = {
       body: f.body || '',
       contract: { contractId: f.contractId },
       dateRaised: new Date().toISOString(),
       description: f.description || '',
-      issueCategory: { issueCategoryId: f.issueCategoryId },
       issueId: null,
       issueType: f.issueType || 'M',
-      masterArea: { masterAreaId: f.masterAreaId },
       resourceCode: { resourceCodeId: f.resourceCodeId != null ? f.resourceCodeId : 0 },
       severity: f.severity != null ? f.severity : 2,
       urgency: f.urgency != null ? f.urgency : 10
-    });
+    };
+    // area + category are optional (nullable): PCI defects set both; a normal
+    // fail-generated issue sets neither.
+    if (f.issueCategoryId != null) payload.issueCategory = { issueCategoryId: f.issueCategoryId };
+    if (f.masterAreaId != null) payload.masterArea = { masterAreaId: f.masterAreaId };
+    var d = await post('/V2/Issues', payload);
     var issueId = d && (d.issueId || d.id || (d.issue && d.issue.issueId));
     if (!issueId) throw new ApiError('Issue create returned no issueId.', 0);
     return { issueId: issueId, body: d };

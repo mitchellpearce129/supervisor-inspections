@@ -521,6 +521,16 @@
   // PCI = any item is an area-based type (6/7/8). These use the free-form
   // defect-logging capture mode instead of the flat question list.
   function isPciConfig(config) { return (config.questions || []).some(function (q) { return rtOf(q).kind === 'pci'; }); }
+  // Template raises ClickHome Issues on fail when its post-inspection action string
+  // contains 'B' = "Generate Maintenance Issues On Fail" (confirmed 2026-07-23).
+  function generatesIssuesOnFail(config) { return String(config.postInspectionAction || '').toUpperCase().indexOf('B') !== -1; }
+  // A question "fails" when it has a fail threshold (failBelow >= 0) and its numeric
+  // result is below it. Non-numeric / unanswered / no-threshold => not a fail.
+  function questionFailed(q, a) {
+    if (q.failBelow == null || q.failBelow < 0) return false;
+    var v = (a && a.value != null && a.value !== '') ? Number(a.value) : null;
+    return v != null && !isNaN(v) && v < q.failBelow;
+  }
   function valueLabel(rt, value) {
     if (value == null || value === '') return 'Not answered';
     if (rt.kind === 'choice') { var o = (rt.options || []).filter(function (x) { return Number(x.value) === Number(value); })[0]; return o ? o.label : String(value); }
@@ -1196,6 +1206,30 @@
     });
   }
 
+  // Normal (non-PCI) inspection whose template generates issues on fail: one Issue
+  // per FAILED question — no area/category, description names the inspection + the
+  // failed question, body = comment, and that question's photos attach to the issue.
+  function buildFailIssues(job, config, capture) {
+    var out = [];
+    config.questions.slice().sort(byOrder).forEach(function (q) {
+      var a = capture.answers[q.id] || {};
+      if (!questionFailed(q, a)) return;
+      out.push({
+        key: 'fail' + q.id, area: '', areaId: null, category: '', categoryId: null,
+        comment: (a.comment || '').trim(),
+        description: 'Fail on ' + config.name + ': ' + q.text,
+        done: false, issueId: null,
+        photos: (a.photos || []).map(function (p) {
+          var parts = [];
+          if (p.when) parts.push('Taken ' + p.when);
+          if (p.geo) parts.push('Location ' + p.geo.lat.toFixed(6) + ', ' + p.geo.lon.toFixed(6) + ' (±' + Math.round(p.geo.acc) + 'm) ' + mapsLink(p.geo));
+          return { blob: p.blob, filename: p.name, title: p.label, description: parts.join(' | '), done: false, idFile: null };
+        })
+      });
+    });
+    return out;
+  }
+
   // A finalised inspection persisted for upload (survives reload/offline).
   function buildPendingRecord(job, config, capture, docs) {
     var items = buildUploadItems(job, config, capture, docs).map(function (it) {
@@ -1210,8 +1244,11 @@
       inspRequiredId: inst.inspRequiredId || null, taskId: inst.taskId || null,
       createdAt: Date.now(), complete: false, items: items
     };
-    // PCI: also create a ClickHome Issue per defect (photos attach to the issue).
+    // Issue generation: PCI -> one Issue per defect; a normal inspection whose
+    // template has the 'Generate Maintenance Issues On Fail' action -> one Issue
+    // per failed question. Both feed the same queue/drain (createIssue + photos).
     if (isPciConfig(config)) rec.defects = buildDefectIssues(job, config, capture);
+    else if (generatesIssuesOnFail(config)) rec.defects = buildFailIssues(job, config, capture);
     return rec;
   }
 
@@ -1292,9 +1329,10 @@
     });
     (rec.defects || []).forEach(function (df) {
       var np = df.photos ? df.photos.length : 0;
+      var lbl = (df.area && df.category) ? (df.area + ' — ' + df.category) : String(df.description || 'Issue').slice(0, 60);
       var status = el('span', { class: 'up-status' + (df.done ? ' up-ok' : ''), text: df.done ? '✓ issue raised' : 'queued' });
       rowEls[df.key] = status;
-      listEl.appendChild(el('div', { class: 'up-row' }, [el('span', { class: 'up-name', text: '⚠ ' + (df.area || 'Area') + ' — ' + (df.category || 'Defect') + ' (' + np + ' photo' + (np === 1 ? '' : 's') + ')' }), status]));
+      listEl.appendChild(el('div', { class: 'up-row' }, [el('span', { class: 'up-name', text: '⚠ ' + lbl + ' (' + np + ' photo' + (np === 1 ? '' : 's') + ')' }), status]));
     });
     var summary = el('div', { class: 'subtle' });
     var actionBtn = el('button', { class: 'btn btn-primary', text: 'Upload to ClickHome' });
