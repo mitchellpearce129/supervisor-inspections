@@ -444,7 +444,10 @@
   // Cache-first -> bundled seed. Does NOT hit the API (use refreshPciLists to update).
   async function loadPciLists() {
     if (window.CHStore && CHStore.available && CFG.systemId) {
-      try { var c = await CHStore.cacheGet(CFG.ns('pcilists')); if (c && c.data && c.data.masterAreas && c.data.masterAreas.length) return c.data; } catch (e) { /* ignore */ }
+      // Require BOTH lists to be non-empty before trusting the cache — a partial
+      // cache (e.g. areas present but categories empty from an old sync) must fall
+      // through to the bundled seed rather than leave a picker blank.
+      try { var c = await CHStore.cacheGet(CFG.ns('pcilists')); if (c && c.data && c.data.masterAreas && c.data.masterAreas.length && c.data.issueCategories && c.data.issueCategories.length) return c.data; } catch (e) { /* ignore */ }
     }
     var seed = await pciSeed();
     return { masterAreas: clean(seed.masterAreas, normArea), issueCategories: clean(seed.issueCategories, normCat) };
