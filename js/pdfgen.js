@@ -69,6 +69,8 @@
     if (model.logo) { chain = chain.then(function () { return regImg(model.logo, 900, 300); }).then(function (idx) { blocks.unshift({ t: 'img', idx: idx, frac: 0.4 }); }); }
     // Location map + defect list at the top (Kerb & Footpath-style reports).
     if (model.locationMap) { chain = chain.then(function () { return regImg(model.locationMap, 1000, 700); }).then(function (idx) { blocks.push({ t: 'img', idx: idx, frac: 0.92 }); }); }
+    // PCI floor plan with numbered defect pins (numbers match the schedule below).
+    if (model.planImage) { chain = chain.then(function () { blocks.push({ t: 'h2', text: 'Floor Plan' }); return regImg(model.planImage, 1000, 1600); }).then(function (idx) { blocks.push({ t: 'img', idx: idx, frac: 0.9 }); }); }
     if (model.defects) {
       chain = chain.then(function () {
         blocks.push({ t: 'h2', text: 'Defect Locations' });
@@ -85,7 +87,7 @@
           var pc = Promise.resolve();
           grp.defects.forEach(function (d) {
             pc = pc.then(function () {
-              blocks.push({ t: 'p', text: 'Issue: ' + (d.category || '-') });
+              blocks.push({ t: 'p', text: d.n + '. Issue: ' + (d.category || '-') + (d.pin ? '  (plan pin ' + d.n + ')' : '') });
               if (d.comment) blocks.push({ t: 'p', text: 'Comment: ' + d.comment });
             });
             (d.photos || []).forEach(function (ph) { pc = pc.then(function () { return regImg(ph, 1000, 750); }).then(function (idx) { blocks.push({ t: 'img', idx: idx, frac: 0.6 }); }); });

@@ -245,3 +245,22 @@ pre.raw-out, .raw pre {
 /* ---- inspection instructions (shown above the signature pane) ------------- */
 .instructions-card { background: color-mix(in srgb, var(--brand) 6%, var(--card)); border-color: color-mix(in srgb, var(--brand) 30%, var(--line)); }
 .instructions-text { white-space: pre-wrap; font-size: 14px; line-height: 1.45; color: var(--ink); }
+
+/* ---- floor-plan pin board ------------------------------------------------- */
+.plan-holder:empty { display: none; }
+.plan-card { margin-bottom: 12px; }
+.plan-card h3 { margin: 0 0 8px; font-size: 15px; }
+.plan-board { margin: 8px 0; }
+.plan-tools { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.plan-spacer { flex: 1; }
+.plan-zoom { width: 40px; height: 36px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); color: var(--ink); font-size: 18px; font-weight: 700; cursor: pointer; }
+.plan-wrap { overflow: auto; max-height: 52vh; border: 1px solid var(--line); border-radius: 10px; background: #fff; -webkit-overflow-scrolling: touch; }
+.plan-stage { position: relative; width: 100%; }
+.plan-img { display: block; width: 100%; height: auto; }
+.plan-pins { position: absolute; inset: 0; pointer-events: none; }
+.plan-pin {
+  position: absolute; transform: translate(-50%, -50%); min-width: 26px; height: 26px; padding: 0 6px;
+  border-radius: 999px; background: var(--err); color: #fff; font-size: 13px; font-weight: 700;
+  display: flex; align-items: center; justify-content: center; border: 2px solid #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, .4); pointer-events: auto; cursor: pointer;
+}

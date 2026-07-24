@@ -171,6 +171,7 @@
           summary: {},                             //   current construction milestone (e.g. 'Main Floor Tiling')
           supervisor: {},                          //   supervisor name
           template: {},                            //   fkidTemplate -> templateId (key for the inspection-types lookup)
+          houseType: {},                           //   houseTypeId -> design/plan resolution (name via cached house-type list)
           security: {}                             //   permission flags
         }
       },
@@ -456,6 +457,25 @@
     return { masterAreas: clean(seed.masterAreas, normArea), issueCategories: clean(seed.issueCategories, normCat) };
   }
 
+  // ---- House-type id -> name map (for floor-plan resolution) ---------------
+  // The job carries only houseTypeId; the name (needed to match the plan
+  // catalogue) comes from this map, refreshed at sync + cached per system.
+  async function refreshHouseTypes() {
+    try {
+      var d = await adminReq('POST', '/V2/AdminSetup/HouseTypes/List?name=HouseType', { criteria: { businessUnitRegions: { businessUnitIds: [0], includeChildBusinessUnits: true } }, selection: { metaData: {} }, sorting: [], pagination: { take: 1000, skip: 0 } });
+      var rows = (d && (d.results || d.list)) || [], map = {};
+      rows.forEach(function (r) { var id = (r.houseTypeId != null ? r.houseTypeId : r.idHouseType); var nm = String(r.houseName || r.sgHouseName || '').trim(); if (id != null && nm) map[String(id)] = nm; });
+      if (Object.keys(map).length && window.CHStore && CHStore.available && CFG.systemId) await CHStore.cachePut(CFG.ns('housetypes'), map).catch(function () {});
+      return map;
+    } catch (e) { return loadHouseTypes(); }
+  }
+  async function loadHouseTypes() {
+    if (window.CHStore && CHStore.available && CFG.systemId) {
+      try { var c = await CHStore.cacheGet(CFG.ns('housetypes')); if (c && c.data) return c.data; } catch (e) { /* ignore */ }
+    }
+    return {};
+  }
+
   window.CHApi = {
     AuthError: AuthError,
     ApiError: ApiError,
@@ -475,6 +495,8 @@
     bulkCacheAllTemplates: bulkCacheAllTemplates,
     refreshDocCategories: refreshDocCategories,
     loadPciLists: loadPciLists,
-    refreshPciLists: refreshPciLists
+    refreshPciLists: refreshPciLists,
+    loadHouseTypes: loadHouseTypes,
+    refreshHouseTypes: refreshHouseTypes
   };
 })();

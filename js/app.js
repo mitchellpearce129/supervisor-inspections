@@ -185,6 +185,36 @@
     } catch (e) { return null; }
   }
 
+  // Rasterize the floor-plan (SVG) + numbered pins into a JPEG for the report.
+  // Pins = defects carrying an fx/fy (fraction of plan w/h), numbered 1..N in
+  // capture order to match the defect schedule. Plan host is CORS-open, so the
+  // crossOrigin image keeps the canvas clean. Returns null if no plan/no pins.
+  function buildPlanImage(planUrl, defects) {
+    if (!planUrl) return Promise.resolve(null);
+    var pins = (defects || []).map(function (d, i) { return { n: i + 1, fx: d.fx, fy: d.fy }; })
+      .filter(function (p) { return p.fx != null && p.fy != null; });
+    if (!pins.length) return Promise.resolve(null);
+    return loadTile(planUrl).then(function (im) {
+      if (!im) return null;
+      var iw = im.naturalWidth || im.width, ih = im.naturalHeight || im.height;
+      if (!iw || !ih) return null;
+      var MAXW = 1000, scale = Math.min(1, MAXW / iw);
+      var canvas = document.createElement('canvas');
+      canvas.width = Math.round(iw * scale); canvas.height = Math.round(ih * scale);
+      var cx = canvas.getContext('2d');
+      cx.fillStyle = '#fff'; cx.fillRect(0, 0, canvas.width, canvas.height);
+      cx.drawImage(im, 0, 0, canvas.width, canvas.height);
+      pins.forEach(function (p) {
+        var px = p.fx * canvas.width, py = p.fy * canvas.height;
+        cx.beginPath(); cx.arc(px, py, 15, 0, 2 * Math.PI); cx.fillStyle = '#d0021b'; cx.fill();
+        cx.lineWidth = 2; cx.strokeStyle = '#fff'; cx.stroke();
+        cx.fillStyle = '#fff'; cx.font = 'bold 16px Helvetica, Arial, sans-serif';
+        cx.textAlign = 'center'; cx.textBaseline = 'middle'; cx.fillText(String(p.n), px, py);
+      });
+      return new Promise(function (res) { canvas.toBlob(function (b) { res(b); }, 'image/jpeg', 0.85); });
+    }).catch(function () { return null; });
+  }
+
   function pickName(u) {
     if (!u || typeof u !== 'object') return '';
     return u.fullName || u.userFullName || u.name ||
@@ -205,6 +235,8 @@
       raw: m,
       masterContractId: m.masterContractId,
       contractId: cc.contractId || null,          // construction child — inspections attach here
+      jobType: cc.jobType || 'C',                 // issue-category filter
+      houseTypeId: (cc.houseType && cc.houseType.houseTypeId) || null,   // -> design/plan resolution
       contractNumber: m.contractNumber || cc.contractNumber || '',
       address: (m.lotAddress && m.lotAddress.address) || '',
       stage: stageName,                           // build stage (e.g. 'Tiler')
@@ -300,6 +332,8 @@
       try {
         try { await api.refreshDocCategories(); } catch (e) { /* non-fatal — keep cached/config ids */ }
         try { await api.refreshPciLists(); } catch (e) { /* non-fatal — keep cached/seed PCI lists */ }
+        try { await api.refreshHouseTypes(); } catch (e) { /* non-fatal — floor plans just won't resolve offline */ }
+        try { await loadPlanCatalogue(); } catch (e) { /* non-fatal — SW precaches the catalogue anyway */ }
         var r = await api.bulkCacheAllTemplates(function (done, total) { syncStatus.textContent = 'Syncing templates… ' + done + '/' + total; });
         templatesSyncedThisSession = true;
         syncStatus.textContent = '✓ ' + r.cached + '/' + r.total + ' templates + doc categories + PCI lists cached for offline';
@@ -409,7 +443,7 @@
     });
     // PCI defect-logging captures store `defects` instead of `answers`.
     var defects = (capture.defects || []).map(function (d) {
-      return { id: d.id, areaId: d.areaId, area: d.area, categoryId: d.categoryId, category: d.category, comment: d.comment || '', nextSeq: d.nextSeq || 1,
+      return { id: d.id, areaId: d.areaId, area: d.area, categoryId: d.categoryId, category: d.category, comment: d.comment || '', nextSeq: d.nextSeq || 1, fx: (d.fx != null ? d.fx : null), fy: (d.fy != null ? d.fy : null),
         photos: (d.photos || []).map(function (p) { return { seq: p.seq, label: p.label, name: p.name, source: p.source, blob: p.blob, geo: p.geo || null, when: p.when || null }; }) };
     });
     return { draftId: draftId, masterContractId: job.masterContractId, contractNumber: job.contractNumber, address: job.address, inspTemplateId: config.inspTemplateId, name: config.name, inst: capture.inst || null, updatedAt: Date.now(), answers: answers, defects: defects };
@@ -531,6 +565,43 @@
     var v = (a && a.value != null && a.value !== '') ? Number(a.value) : null;
     return v != null && !isNaN(v) && v < q.failBelow;
   }
+
+  // ---- Floor-plan resolution (house type -> plan URL) ----------------------
+  var PLAN_CATALOGUE = {};
+  async function loadPlanCatalogue() {
+    var file = (CFG.systemId && CFG.systemId.indexOf('vic') === 0) ? 'data/house-plans-vic.json' : 'data/house-plans.json';
+    if (!PLAN_CATALOGUE[file]) { try { var r = await fetch(file, { cache: 'no-store' }); if (r.ok) PLAN_CATALOGUE[file] = await r.json(); } catch (e) { /* ignore */ } }
+    return PLAN_CATALOGUE[file] || null;
+  }
+  function normDesignKey(s) { return String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, ''); }
+  // 'THE AMELIA - DESIGNER PLUS' / 'Louisiana 26 - Classic Special' -> { base, size }.
+  function parseHouseName(name) {
+    var n = String(name || '').trim().replace(/^THE\s+/i, '').split(' - ')[0].trim();
+    var m = n.match(/^(.*?)\s+(\d+)\s*$/);
+    return m ? { base: m[1].trim(), size: m[2] } : { base: n, size: '' };
+  }
+  // Resolve plan URLs for a house name. Perth catalogue is keyed by design name;
+  // VIC is design + size. Returns { plans:[url], label } or null.
+  async function resolvePlan(houseName) {
+    if (!houseName) return null;
+    var cat = await loadPlanCatalogue();
+    if (!cat) return null;
+    var p = parseHouseName(houseName), key = normDesignKey(p.base);
+    if (cat.plans) {   // Perth: name -> urls
+      var pl = cat.plans[key];
+      return (pl && pl.length) ? { plans: pl, label: p.base } : null;
+    }
+    if (cat.designs) {  // VIC: design + size
+      var ds = cat.designs.filter(function (x) { return normDesignKey(x.design) === key; });
+      for (var i = 0; i < ds.length; i++) {
+        var v = (ds[i].variants || []).filter(function (x) { return String(x.size) === String(p.size); })[0];
+        if (v && v.plans && v.plans.length) return { plans: v.plans, label: p.base + (p.size ? ' ' + p.size : '') };
+      }
+      var fv = ds.length ? (ds[0].variants || [])[0] : null;   // fall back to first variant of the design
+      return (fv && fv.plans && fv.plans.length) ? { plans: fv.plans, label: ds[0].design } : null;
+    }
+    return null;
+  }
   function valueLabel(rt, value) {
     if (value == null || value === '') return 'Not answered';
     if (rt.kind === 'choice') { var o = (rt.options || []).filter(function (x) { return Number(x.value) === Number(value); })[0]; return o ? o.label : String(value); }
@@ -644,22 +715,38 @@
     }
 
     var listWrap = el('div', { class: 'defect-list' });
+    var planHolder = el('div', { class: 'plan-holder' });
     var finBtn = el('button', { class: 'btn btn-primary', text: 'Finalise →', onClick: function () { FinaliseScreen(job, config, capture); } });
     function updateFin() { if (capture.defects.length) finBtn.removeAttribute('disabled'); else finBtn.setAttribute('disabled', 'disabled'); }
 
+    // Floor-plan pin board (shown when the job's house type resolves to a plan).
+    // A pin = a defect with an fx/fy; tap the plan to add, tap a pin to edit.
+    function renderPlan() {
+      clear(planHolder);
+      if (!capture.planUrl) return;
+      var board = PlanBoard({
+        planUrl: capture.planUrl,
+        pins: capture.defects.map(function (d, i) { return { n: i + 1, fx: d.fx, fy: d.fy, _d: d }; }).filter(function (p) { return p.fx != null && p.fy != null; }),
+        onAdd: function (fx, fy) { DefectForm(job, config, capture, null, -1, { fx: fx, fy: fy }); },
+        onPin: function (p) { DefectForm(job, config, capture, p._d, capture.defects.indexOf(p._d)); },
+        height: '46vh'
+      });
+      planHolder.appendChild(el('div', { class: 'card plan-card' }, [el('h3', { text: 'Floor plan — ' + (capture.planLabel || '') }), board.node]));
+    }
+
     function renderList() {
       clear(listWrap);
-      if (!capture.defects.length) listWrap.appendChild(el('p', { class: 'muted', text: 'No defects logged yet. Tap “+ Add defect”.' }));
+      if (!capture.defects.length) listWrap.appendChild(el('p', { class: 'muted', text: capture.planUrl ? 'Tap the plan to drop a pin, or “+ Add defect”.' : 'No defects logged yet. Tap “+ Add defect”.' }));
       capture.defects.forEach(function (d, i) {
         listWrap.appendChild(el('div', { class: 'defect-row' }, [
-          el('div', { class: 'defect-hd' }, [ el('span', { class: 'defect-area', text: d.area || '(no area)' }), el('span', { class: 'defect-cat', text: d.category || '(no category)' }) ]),
+          el('div', { class: 'defect-hd' }, [ el('span', { class: 'defect-area', text: (d.fx != null ? '📍' + (i + 1) + ' ' : '') + (d.area || '(no area)') }), el('span', { class: 'defect-cat', text: d.category || '(no category)' }) ]),
           (d.comment && d.comment.trim()) ? el('div', { class: 'subtle', text: d.comment }) : null,
           (d.photos && d.photos.length) ? el('div', { class: 'thumbs' }, d.photos.map(function (p) { return el('img', { class: 'thumb-sm', src: p.url, alt: p.name }); })) : null,
           el('div', { class: 'defect-actions' }, [
             el('button', { class: 'btn-lib', text: 'Edit', onClick: function () { DefectForm(job, config, capture, d, i); } }),
             el('button', { class: 'btn-lib', text: 'Remove', onClick: function () {
               (d.photos || []).forEach(function (p) { URL.revokeObjectURL(p.url); });
-              capture.defects.splice(i, 1); saveDraft(); renderList(); updateFin();
+              capture.defects.splice(i, 1); saveDraft(); renderList(); renderPlan(); updateFin();
             } })
           ])
         ]));
@@ -670,20 +757,37 @@
     mount(el('div', { class: 'screen screen-defects' }, [
       topBar(config.name, { onBack: function () { ContractInspectionsScreen(job); } }),
       el('p', { class: 'subtle', text: job.contractNumber + ' · ' + (job.address || '') }),
-      el('p', { class: 'muted', text: 'Log each defect against a room/area and issue type, with a photo. ' + capture.defects.length + ' logged.' }),
+      el('p', { class: 'muted', text: 'Log each defect against a room/area + issue type, with a photo. ' + capture.defects.length + ' logged.' }),
+      planHolder,
       listWrap,
       el('div', { class: 'capture-foot' }, [
         el('button', { class: 'btn btn-capture', text: '+ Add defect', onClick: function () { DefectForm(job, config, capture, null, -1); } }),
         finBtn
       ])
     ]));
+
+    // Resolve the house plan (async). No plan (unknown/legacy house type) -> the
+    // dropdown-only defect flow stays exactly as-is.
+    (function () {
+      if (capture.planUrl) { renderPlan(); return; }
+      Promise.resolve(api.loadHouseTypes()).then(function (hts) {
+        if ((!hts || !Object.keys(hts).length) && navigator.onLine !== false) return api.refreshHouseTypes();   // not synced yet
+        return hts;
+      }).then(function (hts) {
+        var houseName = (job.houseTypeId != null && hts) ? hts[String(job.houseTypeId)] : null;
+        return houseName ? resolvePlan(houseName) : null;
+      }).then(function (info) {
+        if (info) { capture.planUrl = info.plans[0]; capture.planLabel = info.label; renderPlan(); }
+      }).catch(function () { /* no plan */ });
+    })();
   }
 
   // Add / edit a single defect. Hosts the live camera so photos can be snapped
   // here (with the same GPS/time stamp + mark-up as the standard capture).
-  function DefectForm(job, config, capture, existingDefect, idx) {
+  function DefectForm(job, config, capture, existingDefect, idx, pin) {
     var isNew = !existingDefect;
     var d = existingDefect || { id: 'd' + Date.now(), areaId: null, area: '', categoryId: null, category: '', comment: '', photos: [], nextSeq: 1 };
+    if (isNew && pin) { d.fx = pin.fx; d.fy = pin.fy; }   // dropped on the floor plan -> carries a pin
     var jobType = String(job.jobType || 'C').toUpperCase();
     var back = function () { DefectScreen(job, config, capture); };
 
@@ -769,6 +873,7 @@
     mount(el('div', { class: 'screen screen-defect-form' }, [
       topBar(isNew ? 'Add defect' : 'Edit defect', { onBack: back }),
       el('p', { class: 'subtle', text: config.name + ' · ' + job.contractNumber }),
+      (d.fx != null) ? el('p', { class: 'subtle', text: '📍 Location pinned on the floor plan' }) : null,
       el('div', { class: 'field' }, [el('label', { class: 'field-label', text: 'Area' }), areaSel]),
       el('div', { class: 'field' }, [el('label', { class: 'field-label', text: 'Issue category' }), catSel]),
       el('div', { class: 'field' }, [el('label', { class: 'field-label', text: 'Comment' }), commentTa]),
@@ -1014,6 +1119,46 @@
     document.body.appendChild(overlay);
   }
 
+  // ---- Floor-plan pin board -----------------------------------------------
+  // Shows a house floor-plan SVG; tapping drops a numbered pin at the tapped
+  // point (stored as fractions fx/fy of the image so pins track zoom). Zoom via
+  // +/- (the wrap scrolls to pan). Each pin corresponds to a logged defect.
+  // opts: { planUrl, pins:[{n,fx,fy}], onAdd(fx,fy), onPin(pin), height }
+  function PlanBoard(opts) {
+    var img = el('img', { class: 'plan-img', src: opts.planUrl, alt: 'Floor plan' });
+    var pinLayer = el('div', { class: 'plan-pins' });
+    var stage = el('div', { class: 'plan-stage' }, [img, pinLayer]);
+    var wrap = el('div', { class: 'plan-wrap' }, [stage]);
+    if (opts.height) wrap.style.maxHeight = opts.height;
+    var scale = 1;
+    function applyScale() { stage.style.width = (scale * 100) + '%'; }
+    function renderPins() {
+      clear(pinLayer);
+      (opts.pins || []).forEach(function (p) {
+        var m = el('div', { class: 'plan-pin', text: String(p.n) });
+        m.style.left = (p.fx * 100) + '%'; m.style.top = (p.fy * 100) + '%';
+        m.addEventListener('click', function (e) { e.stopPropagation(); if (opts.onPin) opts.onPin(p); });
+        pinLayer.appendChild(m);
+      });
+    }
+    img.addEventListener('click', function (ev) {
+      var r = img.getBoundingClientRect();
+      var fx = (ev.clientX - r.left) / r.width, fy = (ev.clientY - r.top) / r.height;
+      if (fx < 0 || fx > 1 || fy < 0 || fy > 1) return;
+      if (opts.onAdd) opts.onAdd(fx, fy);
+    });
+    img.addEventListener('error', function () { wrap.appendChild(el('p', { class: 'muted', text: 'Floor plan could not be loaded.' })); });
+    var zin = el('button', { class: 'plan-zoom', text: '＋', onClick: function () { scale = Math.min(5, scale + 0.5); applyScale(); } });
+    var zout = el('button', { class: 'plan-zoom', text: '－', onClick: function () { scale = Math.max(1, scale - 0.5); applyScale(); } });
+    var reset = el('button', { class: 'btn-lib', text: 'Fit', onClick: function () { scale = 1; applyScale(); wrap.scrollTo(0, 0); } });
+    applyScale(); renderPins();
+    var node = el('div', { class: 'plan-board' }, [
+      el('div', { class: 'plan-tools' }, [el('span', { class: 'muted', text: 'Tap the plan to drop a pin' }), el('span', { class: 'plan-spacer' }), zout, zin, reset]),
+      wrap
+    ]);
+    return { node: node, renderPins: renderPins };
+  }
+
   // ---- Signature pad (canvas) ----------------------------------------------
   function SignaturePad() {
     var canvas = el('canvas', { class: 'sigpad' });
@@ -1058,9 +1203,9 @@
     var defectSchedule = null;
     if (pci) {
       var byArea = {};
-      (capture.defects || []).forEach(function (d) {
+      (capture.defects || []).forEach(function (d, i) {
         var k = d.area || '(unspecified area)';
-        (byArea[k] = byArea[k] || []).push({ category: d.category || '', comment: (d.comment || '').trim(), photos: (d.photos || []).map(function (p) { return p.blob; }) });
+        (byArea[k] = byArea[k] || []).push({ n: i + 1, pin: (d.fx != null && d.fy != null), category: d.category || '', comment: (d.comment || '').trim(), photos: (d.photos || []).map(function (p) { return p.blob; }) });
       });
       defectSchedule = Object.keys(byArea).sort().map(function (a) { return { area: a, defects: byArea[a] }; });
     }
@@ -1071,6 +1216,7 @@
       logo: sig.logo || null,
       instructions: (config.instructions && config.instructions.trim()) ? config.instructions.trim() : null,
       locationMap: sig.locationMap || null,
+      planImage: sig.planImage || null,
       defects: (sig.defects && sig.defects.length) ? sig.defects : null,
       defectSchedule: defectSchedule,
       contract: { number: job.contractNumber, address: job.address, client: job.client, stage: job.stage, inspectionType: config.name, supervisor: sig.supName, date: new Date().toISOString().slice(0, 10) },
@@ -1112,7 +1258,14 @@
             }
           }
         }
-        var model = buildDocModel(job, config, capture, { supName: supName.value.trim(), supBlob: supBlob, cliName: cliName.value.trim(), cliBlob: cliBlob, logo: logoBlob, locationMap: locationMap, defects: defects });
+        // PCI: rasterize the floor plan + numbered pins for the top of the report.
+        var planImage = null;
+        if (isPciConfig(config) && capture.planUrl && (capture.defects || []).some(function (d) { return d.fx != null && d.fy != null; })) {
+          genBtn.textContent = 'Rendering plan…';
+          try { planImage = await buildPlanImage(capture.planUrl, capture.defects || []); } catch (e) { planImage = null; }
+          genBtn.textContent = 'Generating…';
+        }
+        var model = buildDocModel(job, config, capture, { supName: supName.value.trim(), supBlob: supBlob, cliName: cliName.value.trim(), cliBlob: cliBlob, logo: logoBlob, locationMap: locationMap, defects: defects, planImage: planImage });
         var base = sanitizeName(config.name + ' ' + job.contractNumber + ' ' + docStamp());
         var pdf = await window.CHPdf.buildPdf(model);   // primary report
         var odt = await window.CHDoc.buildOdt(model);   // editable backup/source
